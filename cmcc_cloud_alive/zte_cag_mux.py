@@ -176,7 +176,7 @@ class CAGMux:
                     link = self._links.pop(link_id, None)
                 if link is not None:
                     link._mark_closed()
-            elif cmd == CAG_PROXY_DATA_CMD:
+            elif cmd == CAG_PROXY_DATA_CMD or (cmd & 0x0F) == CAG_PROXY_DATA_CMD:
                 with self._mu:
                     link = self._links.get(link_id)
                 if link is not None:
@@ -200,6 +200,10 @@ class CAGMux:
             link_id = self._next_link_id
             self._next_link_id += 1
             link_uuid = new_zte_link_uuid()
+            if not trace_id:
+                trace_id = random_hex(16)
+            if not span_id:
+                span_id = random_hex(8)
             link = CAGMuxLink(self, link_id, link_uuid, trace_id, span_id)
             self._links[link_id] = link
         packet = build_cag_proxy_add_link_packet(

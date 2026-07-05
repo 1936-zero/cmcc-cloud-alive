@@ -199,7 +199,7 @@ class TestAddLinkPacket(unittest.TestCase):
             build_cag_proxy_add_link_packet(params, 1)
 
     def test_trace_span_truncation(self):
-        """Strings longer than their slot are truncated (NUL kept)."""
+        """Strings longer than their slot are truncated to full slot (no NUL)."""
         params = _StubParams("1.2.3.4", 80)
         long_trace = "T" * 100
         long_span = "S" * 100
@@ -207,12 +207,10 @@ class TestAddLinkPacket(unittest.TestCase):
             params, 1, trace_id=long_trace, span_id=long_span
         )
         payload = pkt[4:]
-        # trace slot 0x68:0x89 = 33 bytes, last byte must be NUL
-        self.assertEqual(payload[0x88], 0x00)
-        self.assertEqual(payload[0x68:0x88], b"T" * 0x20)
-        # span slot 0x89:0x9a = 17 bytes, last byte NUL
-        self.assertEqual(payload[0x99], 0x00)
-        self.assertEqual(payload[0x89:0x99], b"S" * 0x10)
+        # trace slot 0x68:0x89 = 33 bytes, filled to capacity (Go copyCString)
+        self.assertEqual(payload[0x68:0x89], b"T" * 0x21)
+        # span slot 0x89:0x9a = 17 bytes, filled to capacity
+        self.assertEqual(payload[0x89:0x9a], b"S" * 0x11)
 
 
 # ===========================================================================
@@ -245,10 +243,14 @@ class TestHelpers(unittest.TestCase):
         buf = bytearray(8)
         copy_c_string(buf, 0, 8, "hi")
         self.assertEqual(buf, b"hi\x00\x00\x00\x00\x00\x00")
-        # truncation keeps a NUL
+        # truncation to full buffer size (Go copyCString: no NUL when full)
         buf2 = bytearray(4)
         copy_c_string(buf2, 0, 4, "abcdef")
-        self.assertEqual(buf2, b"abc\x00")
+        self.assertEqual(buf2, b"abcd")
+        # exact-size: string fills buffer exactly → no NUL (Go: len==size, no NUL)
+        buf3 = bytearray(4)
+        copy_c_string(buf3, 0, 4, "abcd")
+        self.assertEqual(buf3, b"abcd")
 
 
 # ===========================================================================
@@ -290,8 +292,40 @@ class TestCAGProxyConn(unittest.TestCase):
         params = _StubParams("10.0.0.1", 5900)
         conn = CAGProxyConn.open(self.a, params, link_id=1)
         self.b.recv(4096)
-        self.b.sendall(pack_frame(CAG_PROXY_CLOSE_LINK_CMD, 1, b""))
+        self.b.sendall(pack_frame(CAG_PROXY_CLOSE_LINK_CMD, 1, b"x"))
         self.assertEqual(conn.read(64), b"")
+
+    def test_open_default_trace_span(self):
+        """open() without trace_id/span_id applies random-hex defaults (parity with Go)."""
+        params = _StubParams("10.0.0.1", 5900)
+        conn = CAGProxyConn.open(self.a, params)  # link_id defaults to 0→1
+        pkt = self.b.recv(4096)
+        self.assertEqual(pkt[1], 1)  # link_id normalised to 1
+        payload = pkt[4:]
+        # trace slot 0x68:0x89 must be non-zero (random default, not all-NUL)
+        self.assertTrue(any(payload[0x68:0x89]))
+        # span slot 0x89:0x9a must be non-zero
+        self.assertTrue(any(payload[0x89:0x9a]))
+
+    def test_read_skips_empty_frame(self):
+        """read() skips frames with n==0 (Go: if n == 0 { continue })."""
+        params = _StubParams("10.0.0.1", 5900)
+        conn = CAGProxyConn.open(self.a, params, link_id=1)
+        self.b.recv(4096)
+        # empty data frame (n==0) → must be skipped
+        self.b.sendall(pack_frame(CAG_PROXY_DATA_CMD, 1, b""))
+        # real data frame follows
+        self.b.sendall(pack_frame(CAG_PROXY_DATA_CMD, 1, b"real"))
+        self.assertEqual(conn.read(64), b"real")
+
+    def test_read_data_like_fallback(self):
+        """read() treats cmd with low-nibble 0x0a (not exact data/close) as data (Go default case)."""
+        params = _StubParams("10.0.0.1", 5900)
+        conn = CAGProxyConn.open(self.a, params, link_id=1)
+        self.b.recv(4096)
+        # 0x3a: undefined cmd, low nibble == 0x0a → data-like fallback
+        self.b.sendall(pack_frame(0x3a, 1, b"like"))
+        self.assertEqual(conn.read(64), b"like")
 
     def test_write_and_close(self):
         params = _StubParams("10.0.0.1", 5900)
@@ -424,6 +458,30 @@ class TestCAGMux(unittest.TestCase):
         # (not EOF). The link must not hang.
         with self.assertRaises((ConnectionError, OSError)):
             link1.read(64)
+
+    def test_open_link_default_trace_span(self):
+        """open_link() without trace_id/span_id applies random-hex defaults (parity with Go)."""
+        mux = CAGMux.open(self.a)
+        params = _StubParams("10.0.0.1", 5900)
+        link1 = mux.open_link(params)
+        pkt = self.b.recv(4096)
+        payload = pkt[4:]
+        self.assertTrue(any(payload[0x68:0x89]))  # trace non-zero
+        self.assertTrue(any(payload[0x89:0x9a]))  # span non-zero
+        # close b side to terminate readLoop cleanly
+        self.b.close()
+
+    def test_read_loop_data_like_fallback(self):
+        """mux _read_loop treats cmd with low-nibble 0x0a as data (Go default case)."""
+        mux = CAGMux.open(self.a)
+        params = _StubParams("10.0.0.1", 5900)
+        link1 = mux.open_link(params)
+        self._drain_addlink()
+        # 0x3a: undefined cmd, low nibble == 0x0a → data-like fallback
+        self.b.sendall(pack_frame(0x3a, 1, b"like"))
+        link1.set_read_deadline(2)
+        self.assertEqual(link1.read(64), b"like")
+        self.b.close()
 
 
 if __name__ == "__main__":

@@ -162,13 +162,17 @@ def hex_prefix(s: str, n: int) -> str:
 def copy_c_string(buf: bytearray, offset: int, size: int, text: str) -> None:
     """Write *text* into ``buf[offset:offset+size]`` C-string style (P8-011).
 
-    Bytes beyond the text are left zero (the buffer is pre-zeroed by the
-    caller); the text is truncated to ``size-1`` so a NUL terminator always
-    remains, matching Go's ``copyCString``.
+    Faithful port of Go's ``copyCString``: copies up to *size* bytes of *text*.
+    A NUL terminator is written **only** when the text is shorter than the
+    buffer; if the text fills the entire buffer there is no NUL (matching Go's
+    ``copy`` + conditional ``dst[n] = 0``).
     """
-    encoded = text.encode("utf-8", "replace")[: size - 1]
+    if size == 0:
+        return
+    encoded = text.encode("utf-8", "replace")[:size]
     buf[offset : offset + len(encoded)] = encoded
-    # remainder stays zero (NUL-padded)
+    if len(encoded) < size:
+        buf[offset + len(encoded)] = 0  # NUL terminator
 
 
 # ---------------------------------------------------------------------------
@@ -269,12 +273,18 @@ class CAGProxyConn:
         cls,
         conn: socket.socket,
         params,
-        link_id: int,
+        link_id: int = 0,
         trace_id: str = "",
         span_id: str = "",
         link_uuid: Optional[bytes] = None,
     ) -> "CAGProxyConn":
         """Send the add-link packet and return a ready ``CAGProxyConn``."""
+        if link_id == 0:
+            link_id = 1
+        if not trace_id:
+            trace_id = random_hex(16)
+        if not span_id:
+            span_id = random_hex(8)
         if link_uuid is None:
             link_uuid = new_zte_link_uuid()
         packet = build_cag_proxy_add_link_packet(
@@ -293,16 +303,28 @@ class CAGProxyConn:
                 return out
         while True:
             cmd, link_id, payload = read_frame(self.conn)
-            if cmd == CAG_PROXY_CLOSE_LINK_CMD:
-                return b""  # EOF
+            if not payload:
+                continue  # skip empty frames (n==0, parity with B)
             if link_id != self.link_id:
                 continue  # discard frames for other links
-            if len(payload) <= n:
-                return payload
-            out = payload[:n]
-            with self._mu:
-                self._rbuf.extend(payload[n:])
-            return out
+            if cmd == CAG_PROXY_DATA_CMD:
+                if len(payload) <= n:
+                    return payload
+                out = payload[:n]
+                with self._mu:
+                    self._rbuf.extend(payload[n:])
+                return out
+            if cmd == CAG_PROXY_CLOSE_LINK_CMD:
+                return b""  # EOF
+            if (cmd & 0x0F) == CAG_PROXY_DATA_CMD:
+                # data-like fallback (Go switch default case)
+                if len(payload) <= n:
+                    return payload
+                out = payload[:n]
+                with self._mu:
+                    self._rbuf.extend(payload[n:])
+                return out
+            # else: unknown command → ignore (loop continues, parity with B)
 
     def recv(self, n: int = 65536) -> bytes:
         """Alias for :meth:`read` (socket-compatible name)."""
