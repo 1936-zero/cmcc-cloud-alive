@@ -809,6 +809,164 @@ def cmd_state(args):
     core.print_state(args)
 
 
+# --- P11: product keepalive CLI entry --------------------------------------
+#
+# Mirrors B ``cmd/keepalive.go`` ``Keepalive()``: load firmAuth once, let
+# ``product_router.classify_firm_auth_route`` decide SCG vs ZTE, then dispatch
+# to the matching keepalive backend. Emits a redacted report with
+# route/stage/ok/duration/error/nextStep (no-spin rule 4). No raw
+# token/password/connectStr is ever printed.
+
+def _product_keepalive_report(route_name="product-keepalive", stage="route-check"):
+    return {
+        "route": route_name,
+        "stage": stage,
+        "ok": False,
+        "duration": 0,
+        "error": "",
+        "nextStep": "",
+        "kind": "",
+        "reason": "",
+        "userServiceId": "",
+        "vmId": "",
+        "firmAuthSummary": {},
+    }
+
+
+def _run_scg_keepalive(args, auth, route, vm_id, report, started):
+    """Dispatch to the SCG keepalive binary (B keepalive.go SCG branch)."""
+    import time
+    from . import scg_route
+    report["stage"] = "scg-keepalive"
+    sc_auth_code = product_router.extract_sc_auth_code(auth) or ""
+    try:
+        result = scg_route.run_scg_keepalive(
+            scg_ip="", scg_port="", sc_auth_code=sc_auth_code,
+            vm_id=vm_id, duration=args.duration, forever=args.forever,
+            binary_path=args.binary, config_dir=args.config_dir)
+    except FileNotFoundError as exc:
+        report["error"] = str(exc)
+        report["nextStep"] = "build the SCG binary: cd scg_go && go build -o cmcc_keepalive ."
+        report["duration"] = round(time.monotonic() - started, 3)
+        _print(report)
+        return
+    except Exception as exc:  # noqa: BLE001 - surface any launch failure
+        report["error"] = "%s: %s" % (type(exc).__name__, exc)
+        report["nextStep"] = "inspect SCG binary launch / config"
+        report["duration"] = round(time.monotonic() - started, 3)
+        _print(report)
+        return
+
+    if args.forever:
+        # run_scg_keepalive returns a subprocess.Popen for --forever.
+        report["ok"] = True
+        report["stage"] = "scg-keepalive-running"
+        report["nextStep"] = "SCG keepalive running in background (Popen pid=%d); terminate to stop" % result.pid
+    else:
+        ok = (result.returncode == 0)
+        report["ok"] = ok
+        report["stage"] = "scg-keepalive-done" if ok else "scg-keepalive-failed"
+        _stderr = result.stderr
+        if isinstance(_stderr, bytes):
+            _stderr = _stderr.decode("utf-8", "replace")
+        report["error"] = "" if ok else (_stderr.strip() or "SCG binary exited %d" % result.returncode)
+        report["nextStep"] = "" if ok else "inspect binary stderr / CEM GetConnectInfo"
+    report["duration"] = round(time.monotonic() - started, 3)
+    _print(report)
+
+
+def _run_zte_keepalive(args, auth, route, vm_id, report, started):
+    """Dispatch to the ZTE material control-plane (B keepalive.go ZTE branch).
+
+    ``zte_route`` is owned by w1 (P10); import defensively so a transient
+    import error does not crash the CLI — it reports a redacted next-step.
+    """
+    import time
+    report["stage"] = "zte-keepalive"
+    try:
+        from . import zte_route
+    except Exception as exc:  # noqa: BLE001 - ZTE route may be mid-flight
+        report["error"] = "zte_route unavailable: %s" % exc
+        report["nextStep"] = "wait for ZTE route (P10) completion before retrying"
+        report["duration"] = round(time.monotonic() - started, 3)
+        _print(report)
+        return
+    try:
+        firm = zte_route.ZTEFirmAuth.from_auth_dict(auth)
+        material = zte_route.run_material(firm, target_vm_id=vm_id)
+    except Exception as exc:  # noqa: BLE001 - surface any ZTE failure
+        report["error"] = "%s: %s" % (type(exc).__name__, exc)
+        report["nextStep"] = "inspect ZTE material stage %s" % report["stage"]
+        report["duration"] = round(time.monotonic() - started, 3)
+        _print(report)
+        return
+    md = material.to_dict()
+    report["ok"] = md.get("ok", False)
+    report["stage"] = md.get("stage") or "zte-keepalive"
+    report["error"] = md.get("error") or ""
+    report["nextStep"] = md.get("nextStep") or ""
+    report["duration"] = round(time.monotonic() - started, 3)
+    _print(report)
+
+
+def cmd_product_keepalive(args):
+    """Product keepalive entry — route firmAuth to SCG or ZTE keepalive.
+
+    Mirrors B ``cmd/keepalive.go`` ``Keepalive()``: load firmAuth, classify
+    route, dispatch to the matching keepalive backend. Emits a redacted report
+    (route/stage/ok/duration/error/nextStep); never prints raw credentials.
+    """
+    import time
+    started = time.monotonic()
+    report = _product_keepalive_report()
+
+    selected = cloud.selected_user_service_id(args.state, args.user_service_id)
+    report["userServiceId"] = str(selected or "")
+    ns_args = core.argparse.Namespace(state=args.state, user_service_id=selected)
+    try:
+        auth = core.get_firm_auth(ns_args)
+    except Exception as exc:  # noqa: BLE001 - gate must report, not crash
+        report["error"] = str(exc)
+        report["kind"] = product_router.RouteKind.ERROR.value
+        report["reason"] = "firmAuth failed: %s" % exc
+        report["nextStep"] = "fix login/account/firmAuth; do not touch protocol"
+        report["duration"] = round(time.monotonic() - started, 3)
+        _print(report)
+        return
+
+    route = product_router.classify_firm_auth_route(auth)
+    route.userServiceId = str(selected or "")
+    if not route.vmId:
+        route.vmId = str(auth.get("vmId") or auth.get("vmID") or auth.get("uuid") or "")
+    report["kind"] = route.kind.value
+    report["reason"] = route.reason
+    report["vmId"] = route.vmId
+    report["firmAuthSummary"] = product_router.redacted_firm_auth_summary(auth)
+
+    vm_id = args.vm_id or route.vmId
+
+    if route.kind == product_router.RouteKind.ERROR:
+        report["error"] = route.reason
+        report["nextStep"] = "stop; fix firmAuth fields before any protocol work"
+        report["duration"] = round(time.monotonic() - started, 3)
+        _print(report)
+        return
+
+    if route.kind == product_router.RouteKind.SCG:
+        _run_scg_keepalive(args, auth, route, vm_id, report, started)
+        return
+
+    if route.kind == product_router.RouteKind.ZTE:
+        _run_zte_keepalive(args, auth, route, vm_id, report, started)
+        return
+
+    # Defensive: unknown route kind.
+    report["error"] = "unhandled route kind: %s" % route.kind
+    report["nextStep"] = "extend product_router with the new route kind"
+    report["duration"] = round(time.monotonic() - started, 3)
+    _print(report)
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description="CMCC family cloud PC protocol-level keepalive research")
     parser.add_argument("--state", default=None, help="state file path")
@@ -1206,6 +1364,15 @@ def build_parser():
     p.add_argument("--limit", type=int, default=80)
     p.add_argument("--context", type=int, default=2)
     p.set_defaults(func=cmd_source_audit)
+
+    p = sub.add_parser("product-keepalive")
+    p.add_argument("--duration", type=int, default=None, help="hold the SCG connection N seconds (binary default 120); 0 = until interrupted")
+    p.add_argument("--forever", action="store_true", help="run the SCG keepalive binary persistently (Popen, returns immediately)")
+    p.add_argument("--user-service-id", default=None, help="override the selected user service id")
+    p.add_argument("--vm-id", default=None, help="override the target desktop vmId")
+    p.add_argument("--binary", default=None, help="override the SCG keepalive binary path")
+    p.add_argument("--config-dir", default=None, help="override the SCG config directory")
+    p.set_defaults(func=cmd_product_keepalive)
 
     p = sub.add_parser("state")
     p.set_defaults(func=cmd_state)
