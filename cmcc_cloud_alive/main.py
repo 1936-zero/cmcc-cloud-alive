@@ -275,18 +275,34 @@ def _interactive_prompt(message, default=None):
 
 
 def _password_login_with_retry(username, password, state_path, save_password=False):
-    try:
-        auth.password_login(username, password, state_path, save_password=save_password)
-        return password
-    except core.CmccError as err:
-        if save_password:
-            raise
-        print(f"登录失败: {err}")
-        retry = getpass.getpass("请重新输入密码(输入不回显): ")
-        if not retry:
-            raise core.CmccError("password is required") from err
-        auth.password_login(username, retry, state_path, save_password=False)
-        return retry
+    """Login with up to ``max_attempts`` retries on wrong password.
+
+    Always exits via a clean :class:`core.CmccError` (caught by ``main``) so the
+    user never sees a raw traceback when credentials are wrong or input is
+    cancelled (EOF / Ctrl-C).
+    """
+    max_attempts = 3
+    current = password
+    for attempt in range(1, max_attempts + 1):
+        try:
+            auth.password_login(username, current, state_path,
+                                save_password=save_password if attempt == 1 else False)
+            return current
+        except core.CmccError as err:
+            if save_password:
+                raise
+            if attempt >= max_attempts:
+                raise core.CmccError(
+                    f"密码错误次数过多（已尝试 {max_attempts} 次），请确认账号密码后重试") from err
+            print(f"登录失败: {err}")
+            try:
+                retry = getpass.getpass("请重新输入密码(输入不回显): ")
+            except (EOFError, KeyboardInterrupt):
+                raise core.CmccError("已取消密码输入") from err
+            if not retry:
+                raise core.CmccError("password is required") from err
+            current = retry
+    raise core.CmccError("password is required")
 
 
 def _interactive_sleep(seconds, started, run_seconds):
