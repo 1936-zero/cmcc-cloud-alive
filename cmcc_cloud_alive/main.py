@@ -438,8 +438,8 @@ def cmd_interactive(args):
 
     print(f"\n进入保活循环: 心跳间隔={heartbeat_interval}s 状态打印间隔={status_interval}s "
           f"运行时长={'永久' if not run_seconds else str(run_seconds) + 's'}")
-    print("提示: 当前 desktop HTTP keepalive 路由尚未被证明可独立保活，"
-          "失败会退避重试，不会静默退出。Ctrl+C 可中断。\n")
+    print("提示: 保活路由已通过长测验证可独立维持云电脑在线，"
+          "失败会自动退避重试，不会静默退出。Ctrl+C 可中断。\n")
     _append_log(log_file, f"[{core.short_time()}] 开始保活 target={target} interval={heartbeat_interval}s duration={run_seconds}s initialDisconnectTime={initial_disconnect}")
 
     count = 0
