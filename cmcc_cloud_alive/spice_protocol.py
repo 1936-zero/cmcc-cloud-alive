@@ -319,7 +319,7 @@ def decode_data_message(data):
     return {"header": header, "payload": data[DATA_HEADER_SIZE:total], "rest": data[total:]}
 
 
-def encode_display_init(pixmap_cache_id=1, pixmap_cache_size=20 * 1024 * 1024, glz_dictionary_id=1, glz_dictionary_window_size=8 * 1024 * 1024):
+def encode_display_init(pixmap_cache_id=1, pixmap_cache_size=20 * 1024 * 1024, glz_dictionary_id=1, glz_dictionary_window_size=0x7FFC00):
     payload = struct.pack(
         "<BqBI",
         _u8(pixmap_cache_id, "pixmapCacheId"),

@@ -1,23 +1,28 @@
-node_modules/
-npm-debug.log*
-build/
-research/*
-!research/
-!research/zime-probe.c
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
 .env
-.DS_Store
-coverage/
-captures/
-reports/
-.tmp/
+
+# Runtime state / credentials / logs
+.runtime/
+longtest_logs/
+*.log
 *.pcap
 *.pcapng
-__pycache__/
-*.pyc
+*.json.tmp
+cloud_pc*.json
+*_state.json
 
-# credential state (tokens/passwords) — never commit
-state.json
-*.state.json
-.cmcc-cloud-alive/
-.venv/
-.goal_progress/
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.coverage
+dist/
+build/
+*.egg-info/
+
+# Local backups created during regeneration
+_backup_before_selfcontained_*/

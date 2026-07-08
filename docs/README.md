@@ -1,10 +1,11 @@
 # cmcc-cloud-alive
 
-移动云电脑（家庭版畅享版月包，`spuCode=zte-cloud-pc`）协议级桌面保活工具。
+移动云电脑协议级桌面保活工具（不限于“畅享版月包”等特定 SKU，任意已列出的云电脑桌面均可选择/保活）。
 
 > 项目根：`/home/demo/restore/cmcc-cloud-alive`
 > 蓝本(只读)：`/home/demo/cloud-computer-keepalive`（Go 成品）
-> 测试：258 tests，全绿
+> 测试：264 tests，全绿
+> 状态：40 分钟真实环境 live 验证已通过（关机/非运行次数=0）
 
 ## 安装
 

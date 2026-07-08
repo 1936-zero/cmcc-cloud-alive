@@ -22,6 +22,16 @@ def _summary_response(response):
     }
 
 
+def _disconnect_time_message(response):
+    if isinstance(response, dict):
+        data = response.get("data")
+        if isinstance(data, dict) and data.get("message"):
+            return data.get("message")
+        if response.get("message"):
+            return response.get("message")
+    return str(response)
+
+
 def _desktop_context(user_service_id, state_path=None, use_firm_auth=True):
     args = core.argparse.Namespace(state=state_path, user_service_id=str(user_service_id))
     item = cloud.status(user_service_id, state_path)
@@ -160,7 +170,7 @@ def once(user_service_id=None, state_path=None, send_probe=False, send_point=Fal
             "running": status_running,
         },
         "heartbeat": _summary_response(heartbeat_response),
-        "disconnectTime": _summary_response(disconnect_time_response) if isinstance(disconnect_time_response, dict) and "error" not in disconnect_time_response else disconnect_time_response,
+        "disconnectTime": f"[官方自动关机时长]:{_disconnect_time_message(disconnect_time_response)}" if isinstance(disconnect_time_response, dict) and "error" not in disconnect_time_response else disconnect_time_response,
         "infoReport": _summary_response(info_response),
         "connectEvents": connect_event_responses,
         "point": _summary_response(point_response) if isinstance(point_response, dict) and "error" not in point_response else point_response,

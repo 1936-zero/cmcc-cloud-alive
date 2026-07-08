@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cmcc-cloud-alive"
+version = "0.1.0"
+description = "移动云电脑中文保活向导"
+requires-python = ">=3.10"
+dependencies = ["cryptography>=3.4"]
+
+[tool.setuptools]
+packages = ["cmcc_cloud_alive"]
+
+[project.scripts]
+cmcc-cloud-alive = "cmcc_cloud_alive.main:main"

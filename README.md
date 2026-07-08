@@ -1,351 +1,343 @@
-# cmcc-cloud-alive
+# 移动云电脑保活工具
 
-China Mobile family cloud PC protocol-level keepalive research.
+这是一个给普通用户使用的移动云电脑保活工具。安装后按提示登录账号、选择云电脑、选择保活协议，就可以让程序定时发送保活流量，减少云电脑因为空闲而自动关机的情况。
 
-This project targets the family/ordinary cloud PC route, especially the Linux
-client path that uses RAP/ZIME/SPICE desktop transport. Docker packaging and
-HTTP/CAG keepalive loops are abandoned.
+> 你不需要会写代码，也不需要手动编辑 json 文件。大多数情况下，只要复制命令、按中文提示选择即可。
 
-Current scope is limited to `家庭云电脑畅享版月包`. The user's desktop guest OS
-has been restored to Win10, but the external connection path still follows the
-family Linux client RAP/ZIME/SPICE transport.
+## 这个工具能做什么？
 
-## Status
+- 登录移动云电脑账号。
+- 自动读取你的云电脑列表。
+- 手动选择要保活的云电脑。
+- 手动选择保活协议：`ZTE` 或 `SCG`。
+- 云电脑未开机时，首次检测会自动开机一次。
+- 云电脑已运行后，按你设置的间隔循环保活。
+- token 失效时，会用已保存的账号密码自动重新登录并继续保活。
+- 支持一个账号多台云电脑、多账号多开。
 
-Current active route:
+## 使用前需要准备什么？
 
-1. Use the family SOHO API only for login, cloud list, status, and fresh
-   connection material.
-2. Reverse the native Linux client transport:
-   `CAG/RAP -> ZIME -> SPICE main/display channel`.
-3. Reproduce the display-channel keepalive path from Codming's analysis:
-   SPICE link/auth, display channel, `DISPLAY_INIT`, then ACK/PONG handling.
-4. Prove it with an independent per-minute cloud power monitor. If the VM
-   reaches `已关机` or any non-running state, the test fails.
+你需要一台能联网的电脑，并安装：
 
-Implemented:
+- Git
+- Python 3.10 或更高版本
+- pip / venv
 
-- Password login and SOHO signed/encrypted request support.
-- Cloud list, selection cache, and power-state status checks.
-- Target guard for `家庭云电脑畅享版月包`: automatic selection and explicit
-  selection refuse clearly non-target cloud PCs.
-- Independent power monitor: `power-monitor` and `scripts/power-monitor.sh`.
-- CAG boot/connect-material acquisition and `connectStr` decoding.
-- Offline SPICE/Chuanyun codecs:
-  REDQ link messages, mini/data headers, `DISPLAY_INIT`, ACK/PONG, Surface/MARK
-  success predicate, and RSA OAEP ticket encryption.
-- ZIME dynamic probe:
-  `research/zime-probe.c`, `scripts/build-zime-probe.sh`,
-  `scripts/run-zime-probe.sh`. The probe also reports candidate
-  `ZIMEPacketOutSpec` records from `TransportBatchImplC::OnSendData_Batch`
-  so RAP/ZIME protected UDP payload descriptors can be studied without
-  hand-decoding raw memory snapshots.
-- RAP/ZIME UDP transport scaffold:
-  ZTEC request/ack codec, RAP compound datagram parsing, and
-  `rap-zime-udp-probe` for short target/tunnel validation. The probe can also
-  load complete packet-out payloads from a `zime-native-bridge` report via
-  `--native-report`.
-- RAP/ZIME payload-envelope analysis:
-  observed data frames expose an inner payload length and local SPICE channel
-  prefix before protected ZIME bytes. This is trace evidence only and is not
-  replayable plaintext.
-- Research-only native ZIME bridge:
-  `zime-native-bridge` can inspect `libZIMEDataEngine.so` exports/ABI and, only
-  with `--allow-native-run`, call the native engine with fake external
-  transport callbacks to study packet-out records. It now reaches
-  `ZIME_CreateDataChannel ret=0` with `mtu=1452` and captures a complete
-  `native_transport_batch` after `ZIME_DataChannelProcess2`; this is a
-  protected QUIC/ZIME packet-out candidate, not desktop keepalive proof. The
-  bridge also has an explicitly enabled UDP-backed external transport mode
-  that can send native packet-out bytes and feed UDP responses back through
-  `ZIME_ReceiveData`; local tests cover raw UDP and RAP-wrapped payloads. The
-  CLI now waits for a successful `native_channel_created` callback before
-  creating a user stream, so a slow RAP/ZIME handshake does not trigger an
-  early `ZIME_CreateDataStream` / `Channel does not exist` failure.
+如果你不知道有没有安装，先按下面的系统步骤执行即可。
 
-Not implemented yet:
+## 一键安装并启动
 
-- A full RAP/ZIME/SPICE protocol runner that completes SPICE link/auth/display
-  setup and keeps the family desktop alive without the official GUI client.
-- A successful real cloud RAP/ZIME handshake through the new UDP-backed native
-  transport, including `native_channel_created` / channel-active evidence.
-- User stream creation and `ZIME_SendData(DISPLAY_INIT)` after the native
-  channel is truly established.
+### Ubuntu / Debian / 云服务器
 
-## Rejected Routes
-
-Pure SOHO HTTP visible timers are rejected as keepalive. Long tests showed
-`heartbeat/infoReport/logConfig` could return accepted responses while the VM
-still powered off.
-
-CAG HTTPS refresh is rejected as keepalive. It is retained only for boot and
-connection-material research. It can replace an official desktop session, and
-independent monitoring saw shutdown during the CAG + HTTP-prime test.
-
-Do not treat accepted HTTP responses, CAG `connectStr`, or a temporary
-`运行中` status after CAG as success. Success requires the cloud desktop to stay
-running past the idle shutdown window under independent per-minute monitoring.
-
-## References
-
-Primary protocol direction:
-
-- <https://codming.com/posts/cmcc-cloud-computer-keepalive/>
-
-Methodology reference only, not a family-edition protocol source:
-
-- <https://hansiy.net/p/86b7133e>
-
-The family Linux route differs from the macOS/enterprise examples. Captures and
-the installed Linux client decide the implementation, not assumptions copied
-from another edition.
-
-Handoff for the next agent:
-
-- [docs/delivery-handoff.md](docs/delivery-handoff.md)
-
-## Configuration
-
-All tunable values are environment variables with sensible defaults.  Copy
-[`.env.example`](.env.example) to `.env` and adjust as needed — `.env` is
-git-ignored so real credentials never enter version control.
-
-Key variables:
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `CMCC_ALIVE_STATE` | `.tmp/state.json` | Login / selection state cache path |
-| `CMCC_ALIVE_PROFILE` | `linux` | Client profile (linux/windows/mac) |
-| `CMCC_ZTE_TARGET_VMID` | research target UUID | Target cloud-PC VM ID |
-| `CCK_ZTE_KEEPALIVE_DURATION` | `120` | ZTE keepalive interval (seconds) |
-| `CCK_ZTE_CAG_AUTH_TEMPLATE_HEX` | *(empty)* | Pre-captured CAG auth template (hex) |
-| `CMCC_SCG_BINARY` | *(empty)* | Path to Go-compiled SCG keepalive binary |
-| `CMCC_ZIME_LIB` | bundled default | Path to `libZIMEDataEngine.so` |
-| `BBS_API_KEY` | *(empty)* | Internal BBS API key (live-run reports) |
-| `BBS_MASTER_TOKEN` | *(empty)* | Internal BBS master token |
-
-## Basic Commands
-
-Run tests:
+复制整段到终端执行：
 
 ```bash
-python3 -m unittest discover -s tests -p 'test_python_*.py' -v
+sudo apt update && sudo apt install -y git python3 python3-venv python3-pip \
+&& git clone https://github.com/1936-zero/cmcc-cloud-alive.git \
+&& cd cmcc-cloud-alive \
+&& python3 -m venv .venv \
+&& . .venv/bin/activate \
+&& python3 -m pip install -U pip \
+&& python3 -m pip install -e . \
+&& python3 -m cmcc_cloud_alive
 ```
 
-Login and cache credentials. Omit the password argument so it is entered via hidden prompt; avoid putting plaintext passwords in shell history:
+### macOS
+
+先安装 Homebrew，然后执行：
 
 ```bash
-CMCC_ALIVE_STATE=.tmp/state.json python3 bin/cmcc_cloud_alive.py login <username> --save-password
+brew install git python
+
+git clone https://github.com/1936-zero/cmcc-cloud-alive.git
+cd cmcc-cloud-alive
+python3 -m venv .venv
+. .venv/bin/activate
+python3 -m pip install -U pip
+python3 -m pip install -e .
+python3 -m cmcc_cloud_alive
 ```
 
-List and select a desktop:
+### Windows
+
+使用 PowerShell 执行：
+
+```powershell
+git clone https://github.com/1936-zero/cmcc-cloud-alive.git
+cd cmcc-cloud-alive
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -U pip
+python -m pip install -e .
+python -m cmcc_cloud_alive
+```
+
+如果 PowerShell 提示禁止运行脚本，先执行：
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+然后重新执行：
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m cmcc_cloud_alive
+```
+
+## 第一次怎么用？
+
+启动后看到类似界面：
+
+```text
+移动云电脑保活工具
+请输入命令：login 登录并开始保活；help 查看帮助；exit 退出。
+cmcc>
+```
+
+输入：
+
+```text
+login
+```
+
+然后按中文提示操作：
+
+1. 选择保活档案。
+   - 第一次用，选择“新增一个账号/云桌面档案”。
+   - 以后继续之前的云电脑，选择已有档案。
+2. 输入移动云电脑账号。
+3. 输入密码。
+4. 程序自动读取云电脑列表。
+5. 输入序号选择要保活的云电脑。
+6. 手动选择协议：`ZTE` 或 `SCG`。
+   - 你选 ZTE，程序就走 ZTE。
+   - 你选 SCG，程序就走 SCG。
+   - 程序不会偷偷替你自动切换协议。
+7. 程序展示官方自动关机提示，例如：
+
+```text
+[官方自动关机时长]：<官方接口返回的提示文案>
+```
+
+8. 设置保活间隔、每轮保活持续秒数、运行轮数。
+9. 程序开始保活。
+
+如果当前云电脑没有开机，程序首次检测时会自动开机一次；后续循环只做保活和状态检测，不会反复开机。
+
+## 以后每天怎么启动？
+
+第一次安装完成后，以后不需要重复安装依赖。
+
+### Linux / macOS
 
 ```bash
-CMCC_ALIVE_STATE=.tmp/state.json python3 bin/cmcc_cloud_alive.py list
-CMCC_ALIVE_STATE=.tmp/state.json python3 bin/cmcc_cloud_alive.py select <userServiceId>
+cd cmcc-cloud-alive
+. .venv/bin/activate
+python3 -m cmcc_cloud_alive
 ```
 
-Check cloud power state:
+### Windows PowerShell
+
+```powershell
+cd cmcc-cloud-alive
+.\.venv\Scripts\Activate.ps1
+python -m cmcc_cloud_alive
+```
+
+进入程序后输入：
+
+```text
+login
+```
+
+选择之前保存的保活档案即可。
+
+## 什么是保活档案？
+
+保活档案就是程序为每台云电脑保存的一份本地记录，里面包含：
+
+- 账号信息
+- 云电脑选择
+- token 缓存
+- 协议选择
+- 保活需要的状态信息
+
+普通用户不需要打开或修改这些文件。
+
+程序会自动保存到 `.runtime/` 目录。这个目录只在你的电脑本地使用，不应该发给别人，也不应该上传到 GitHub。
+
+## token 失效了怎么办？
+
+不用手动处理。
+
+只要保活档案里保存的账号密码还是正确的：
+
+- 启动时 token 失效，程序会自动重新登录。
+- 保活运行中 token 失效，程序会在下一次检查/保活前自动刷新。
+- 刷新成功后继续保活，不需要你删除 json，也不需要复制 token。
+
+## 多账号 / 多台云电脑怎么多开？
+
+一个终端窗口运行一个保活进程。
+
+简单理解：
+
+```text
+一个终端窗口 = 一个保活进程
+一个保活进程 = 一个保活档案
+一个保活档案 = 一台云电脑的独立记录
+```
+
+### 多开第 1 台云电脑
+
+打开第一个终端：
 
 ```bash
-CMCC_ALIVE_STATE=.tmp/state.json python3 bin/cmcc_cloud_alive.py status <userServiceId>
+cd cmcc-cloud-alive
+. .venv/bin/activate
+python3 -m cmcc_cloud_alive
 ```
 
-Independent power monitor:
+输入：
+
+```text
+login
+```
+
+选择“新增一个账号/云桌面档案”，然后登录并选择第 1 台云电脑。
+
+### 多开第 2 台云电脑
+
+不要关闭第一个终端。再打开第二个终端，执行同样命令：
 
 ```bash
-CMCC_ALIVE_STATE=.tmp/state.json scripts/power-monitor.sh <userServiceId> \
-  --duration 2400 \
-  --interval 60 \
-  --stop-on-off \
-  --report-file reports/power-monitor-40min.json
+cd cmcc-cloud-alive
+. .venv/bin/activate
+python3 -m cmcc_cloud_alive
 ```
 
-Run any protocol experiment under mandatory independent verification:
+输入：
+
+```text
+login
+```
+
+再次选择“新增一个账号/云桌面档案”，然后选择第 2 台云电脑。
+
+可以是同一个账号下的不同云电脑，也可以是不同账号。
+
+程序会自动生成独立档案，类似：
+
+```text
+.runtime/profiles/desktop1.json
+.runtime/profiles/desktop2.json
+.runtime/profiles/desktop3.json
+```
+
+你不需要手动创建这些文件。
+
+## `.venv` 是什么？为什么要激活？
+
+`.venv` 是这个工具专用的 Python 环境。
+
+好处：
+
+- 不污染系统 Python。
+- 不影响电脑上的其他软件。
+- 换电脑时步骤一致。
+- 出问题更容易排查。
+
+第一次安装时需要创建 `.venv` 并安装依赖。以后每次启动，只需要先激活 `.venv`，再运行程序。
+
+## 常见问题
+
+### 1. 我可以直接运行 `python3 -m cmcc_cloud_alive` 吗？
+
+如果你已经在项目目录里，并且依赖已经安装，可以。
+
+但推荐普通用户先激活 `.venv`，这样最稳定：
 
 ```bash
-CMCC_ALIVE_STATE=.tmp/state.json scripts/verified-run.sh \
-  --duration 2400 \
-  --interval 60 \
-  --report-file reports/<experiment>.verified.json \
-  <userServiceId> -- <protocol-runner-command>
+cd cmcc-cloud-alive
+. .venv/bin/activate
+python3 -m cmcc_cloud_alive
 ```
 
-Offline SPICE codec proof:
+### 2. 选择已有档案后，还会重新问账号密码吗？
+
+正常不会重复问。
+
+你选择已有保活档案后，程序会直接使用该档案里的账号、密码、token 和云电脑信息。只有新增档案、档案损坏、没有保存密码、或者你主动选择重新输入时，才需要重新输入账号密码。
+
+### 3. 保活期间会不会因为 token 失效直接退出？
+
+正常不会。
+
+程序会在关键步骤前检查 token，失效就自动重新登录并继续保活。
+
+### 4. 官方自动关机时长是写死的吗？
+
+不是。
+
+程序展示的是官方接口返回的提示文案，格式类似：
+
+```text
+[官方自动关机时长]：<官方接口返回的提示文案>
+```
+
+这个内容只用于展示，不代表程序写死了某个分钟数。
+
+### 5. 选错协议怎么办？
+
+停止当前程序，重新启动后再次输入 `login`，选择对应档案，然后重新选择协议即可。
+
+### 6. 想退出当前输入怎么办？
+
+在输入提示里可以输入：
+
+```text
+exit
+quit
+q
+```
+
+程序会尽量返回主菜单。误按 `Ctrl-C` 或 `Ctrl-D` 时，也会尽量避免直接显示 Python 报错。
+
+## 安全提醒
+
+请不要把下面这些本地文件/目录发给别人：
+
+```text
+.runtime/
+longtest_logs/
+*.log
+cloud_pc*.json
+*_state.json
+```
+
+它们可能包含账号缓存、token、密码缓存或运行日志。
+
+正常使用时，你只需要运行程序，不需要打开这些文件。
+
+## 更新工具
+
+如果以后仓库有更新，进入目录后执行：
 
 ```bash
-python3 bin/cmcc_cloud_alive.py spice-offline-proof
+cd cmcc-cloud-alive
+git pull
+. .venv/bin/activate
+python3 -m pip install -e .
+python3 -m cmcc_cloud_alive
 ```
 
-`run --strategy auto` now resolves to the SPICE protocol target and exits with
-a clear not-implemented error until the real RAP/ZIME/SPICE runner exists.
+Windows PowerShell：
 
-## ZIME Probe
-
-Build the probe:
-
-```bash
-scripts/build-zime-probe.sh
+```powershell
+cd cmcc-cloud-alive
+git pull
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e .
+python -m cmcc_cloud_alive
 ```
-
-Run an official client or SDK command under the probe:
-
-```bash
-ZIME_PROBE_LOG=reports/zime-official.jsonl \
-  scripts/run-zime-probe.sh -- <official-client-or-sdk-command>
-```
-
-The default `ZIME_PROBE_MODE=low` is intentionally conservative after the
-2026-07-03 `SPICE_OUTBAND` crash investigation: it only interposes exported
-ZIME C API boundaries, defaults to `ZIME_PROBE_PROCESS_FILTER=uSmartView`, and
-does not export libc socket/read/write/send/recv, SSL, or C++ callback symbols.
-Use explicit modes only when the next capture needs deeper transport evidence:
-
-```bash
-ZIME_PROBE_MODE=transport scripts/run-zime-probe.sh -- <official-client-or-sdk-command>
-ZIME_PROBE_MODE=callback scripts/run-zime-probe.sh -- <official-client-or-sdk-command>
-ZIME_PROBE_MODE=full scripts/run-zime-probe.sh -- <official-client-or-sdk-command>
-ZIME_PROBE_MODE=cpp scripts/run-zime-probe.sh -- <official-client-or-sdk-command>
-```
-
-`transport/full/cpp` use separate `.so` outputs so a high-intrusion build does
-not silently affect later low-intrusion runs.
-
-Analyze a probe log:
-
-```bash
-python3 bin/cmcc_cloud_alive.py analyze-zime-probe reports/zime-official.jsonl \
-  --report-file reports/zime-official.analysis.json
-```
-
-Analyze RAP/ZIME transport and produce runner input:
-
-```bash
-python3 bin/cmcc_cloud_alive.py analyze-rap-zime reports/zime-official.jsonl \
-  --report-file reports/rap-zime-runner-input.json
-```
-
-The report includes `runnerInput.observedTransports`. Treat it as usable
-RAP/ZIME UDP runner input only when `rapZimeUdpObserved=true` and a tunnel ID is
-present. A `family-native-spice-trace-only` result means the probe saw local
-native/SPICE activity but did not capture the RAP/ZTEC UDP tunnel parameters.
-
-Short RAP/ZIME UDP transport probe:
-
-```bash
-python3 bin/cmcc_cloud_alive.py rap-zime-udp-probe \
-  --runner-input reports/rap-zime-runner-input.json \
-  --target <host:port>
-```
-
-This probe validates the outer UDP transport only. It is not a desktop
-keepalive proof.
-
-Inspect the native ZIME bridge without running native code:
-
-```bash
-python3 bin/cmcc_cloud_alive.py zime-native-bridge
-```
-
-Offline native experiment with fake external transport callbacks only:
-
-```bash
-python3 bin/cmcc_cloud_alive.py zime-native-bridge \
-  --display-init \
-  --allow-native-run \
-  --report-file reports/zime-native-bridge-display-init.json
-```
-
-Even a successful native bridge report is research evidence only. It still must
-be followed by a real protocol runner and `verified-run`. With fake transport,
-the default channel-created wait is expected to stop at
-`native_channel_created_pending`; use `--wait-channel-created-ticks 0` only when
-you need to compare the older immediate stream-creation behavior.
-
-Experimental UDP-backed native transport, still not a keepalive proof:
-
-```bash
-python3 bin/cmcc_cloud_alive.py zime-native-bridge \
-  --allow-native-run \
-  --read-iov-payload \
-  --runner-input reports/rap-zime-runner-input.json
-```
-
-`--runner-input` auto-fills the RAP UDP target, tunnel ID, RAP wire mode, and
-channel-context remote address. `--udp-transport-target` and
-`--udp-rap-tunnel-id` remain available for explicit overrides. By default the
-bridge performs extra `ZIME_DataChannelProcess2` / UDP-drain ticks waiting for
-`native_channel_created` before stream creation. Use
-`--wait-channel-created-ticks 0` only for legacy offline probing.
-
-The report includes `nativeMilestones`, which summarizes whether the probe
-reached packet-out, UDP send/receive, `ZIME_ReceiveData`,
-`native_channel_created`, user stream creation, and `DISPLAY_INIT`. A milestone
-summary is still diagnostic only; it is not a keepalive proof.
-
-Use `--udp-transport-mode raw` only when testing a raw native ZIME UDP endpoint.
-For the family Linux path, RAP wrapping is the expected experiment boundary,
-but the exact payload wrapper and reserve bytes still need live validation. The
-RAP data-frame payload can now be varied with
-`--udp-rap-payload-envelope raw|len16|strip-reserve4-len16`:
-
-- `raw` keeps the previous behavior and places the native packet-out directly
-  inside the RAP data-frame payload.
-- `len16` sends `uint16_le(len(native)) + native` and strips the length on
-  receive before calling `ZIME_ReceiveData`.
-- `strip-reserve4-len16` sends `uint16_le(len(native[4:])) + native[4:]` and
-  restores a four-byte zero reserve prefix on receive.
-
-These modes are handshake experiments only. They are still session-owning when
-used against a live RAP/ZTEC target and are not keepalive proof.
-
-Native packet-out records may contain multiple iovec segments. The default
-`--udp-packet-out-iov-mode concat` preserves the original behavior and sends the
-concatenated iovec payload as one datagram. Experimental
-`--udp-packet-out-iov-mode split` sends each captured iovec segment as a
-separate UDP/RAP datagram so live tests can compare against trace-sized RAP
-data frames.
-
-When `--runner-input` contains `rapDataFrameSendTemplates`, the default
-`--udp-rap-template-mode auto` uses those observed send-side 0x81 header
-templates by payload kind. `static` keeps the old single-template behavior, and
-`sequence` walks the observed templates in order.
-
-The probe logs JSONL records for:
-
-- `ZIME_CreateDataEngine`
-- `ZIME_Init`
-- `ZIME_SetDataChannelCallback`
-- `ZIME_SetDataExternalTransport`
-- `ZIME_CreateDataChannel`
-- `ZIME_CreateDataStream`
-- `ZIME_SendData`
-- `ZIME_SendData2`
-- `ZIME_ReceiveData`
-- `ZIME_DataChannelProcess2`
-
-It records channel/stream IDs, return values, buffer lengths, payload hex
-prefixes, and coarse payload classification such as `spice-link`,
-`spice-display-init`, `spice-surface-create`, or `chuanyun-frame`. It does not
-modify return values or inject keepalive behavior.
-
-When callback wrapping is enabled, the probe emits `zime_packet_spec` records
-for `TransportBatchImplC::OnSendData_Batch` / `ZIMETransport.OnSendData_Batch`.
-The analyzer summarizes them under `zimePacketSpecs`. These entries describe
-candidate iovec/socket-address fields for protected UDP packets; they are
-trace-only metadata and are not replayable SPICE plaintext.
-
-## Verification Rule
-
-No route is considered complete until a long run satisfies all of these:
-
-- Target is the ordinary family cloud PC.
-- Official GUI client is not silently keeping the desktop alive unless the run
-  is explicitly a contaminated control.
-- Every minute has an independent power-state snapshot.
-- No snapshot reports `已关机` or non-running.
-- The run reaches at least 40 minutes.
-- The protocol trace shows the display path reached at least
-  `DISPLAY_INIT` and Surface/MARK or equivalent display activity.
-
-Accepted service responses are evidence, not success.
