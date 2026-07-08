@@ -32,6 +32,15 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+# --- proxy bypass: clear all proxy env vars so urllib never routes through
+# clash/system proxy.  Go binary ignores these; Python urllib honours them by
+# default, which breaks SCG/CAG requests when a proxy is active. ---
+for _p in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+           "http_proxy", "https_proxy", "all_proxy"):
+    os.environ.pop(_p, None)
+os.environ["NO_PROXY"] = "*"
+os.environ["no_proxy"] = "*"
+
 
 CONFIG = {
     "app_key": "a2c4f80ec311ce63d06a36e269111b505327e0fe9ddb74767e5ef63bc293c5ce",
@@ -70,7 +79,7 @@ CLIENT_PROFILES = {
     },
 }
 
-DEFAULT_STATE = Path.home() / ".cmcc-cloud-alive" / "state.json"
+DEFAULT_STATE = Path(__file__).resolve().parents[1] / ".runtime" / "state.json"
 SENSITIVE_REPORT_KEYS = {
     "accessToken",
     "authorization",
@@ -164,7 +173,7 @@ def log_time():
 
 
 def short_time():
-    return shanghai_now().strftime("%H:%M:%S")
+    return shanghai_now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def format_duration(seconds):
@@ -179,8 +188,17 @@ def format_duration(seconds):
 
 
 def state_path(args=None):
-    if args is not None and getattr(args, "state", None):
-        return Path(args.state)
+    """Return the state json path.
+
+    args may be an argparse object, a raw string/path, or None.  The raw
+    string/path support is important for the friendly REPL/profile flow where
+    callers pass a selected json path directly.
+    """
+    if args is not None:
+        if isinstance(args, (str, os.PathLike)):
+            return Path(args)
+        if getattr(args, "state", None):
+            return Path(args.state)
     return Path(os.environ.get("CMCC_ALIVE_STATE", DEFAULT_STATE))
 
 
@@ -384,6 +402,28 @@ def rsa_no_padding_encrypt_bytes(raw, public_key_body, chunk_size=None):
         encrypted = pow(int.from_bytes(padded, "big"), exponent, modulus)
         out.extend(encrypted.to_bytes(key_len, "big"))
     return base64.b64encode(bytes(out)).decode("ascii")
+
+
+def rsa_pkcs1_v15_encrypt_b64(text, public_key_body):
+    """PKCS#1 v1.5 RSA encryption returning base64 of raw encrypted bytes.
+
+    Mirrors Go's rsa.EncryptPKCS1v15:
+        EM = 0x00 || 0x02 || PS (random non-zero) || 0x00 || M
+    where PS length = key_len - len(M) - 3.
+    """
+    raw = str(text).encode("utf-8")
+    modulus, exponent, key_len = parse_rsa_public_key(public_key_body)
+    if len(raw) > key_len - 11:
+        raise CmccError(f"RSA plaintext too long ({len(raw)} > {key_len - 11}) for PKCS1v1.5")
+    ps_len = key_len - len(raw) - 3
+    ps = bytearray()
+    while len(ps) < ps_len:
+        b = secrets.randbelow(255) + 1
+        ps.append(b)
+    em = b"\x00\x02" + bytes(ps) + b"\x00" + raw
+    ct = pow(int.from_bytes(em, "big"), exponent, modulus)
+    ct_bytes = ct.to_bytes(key_len, "big")
+    return base64.b64encode(ct_bytes).decode("ascii")
 
 
 def rsa_encrypt_body(data, public_key_body):

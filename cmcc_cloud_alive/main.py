@@ -14,6 +14,36 @@ def _print(obj):
     print(json.dumps(obj, ensure_ascii=False, indent=2))
 
 
+def _product_summary_line(report):
+    kind = report.get("kind") or "-"
+    ok = report.get("ok")
+    stage = report.get("stage") or "-"
+    duration = report.get("duration")
+    err = report.get("error") or ""
+    return (
+        f"[product-keepalive] kind={kind} ok={ok} stage={stage} duration={duration}s"
+        + (f" error={err}" if err else "")
+    )
+
+
+def _print_product_summary(report):
+    """Print one-line product keepalive summary for interactive keepalive UI."""
+    print(_product_summary_line(report), flush=True)
+
+
+def _print_product_report(report):
+    """Print product protocol report with a human summary plus redacted JSON."""
+    _print_product_summary(report)
+    print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
+
+
+def _emit_product_report(args, report):
+    if getattr(args, "summary_only", False):
+        _print_product_summary(report)
+    else:
+        _print_product_report(report)
+
+
 def _write_report(obj, report_file):
     core.write_private_json_report(obj, report_file)
 
@@ -172,19 +202,37 @@ def _int_auto(value):
     return int(str(value), 0)
 
 
+def _choose_username_with_cached(cached, prompt_func):
+    """Return cached username or a newly entered username via an explicit menu."""
+    if not cached:
+        return prompt_func("账号(手机号)")
+    print(f"检测到已缓存账号：{cached}", flush=True)
+    print("  1. 继续使用该账号", flush=True)
+    print("  2. 重新输入账号", flush=True)
+    choice = prompt_func("请选择账号来源", default="1").strip()
+    if choice in ("", "1"):
+        return cached
+    if choice == "2":
+        return prompt_func("账号(手机号)")
+    # 兼容老习惯：用户直接在选择处输入手机号/账号时，也视为切换账号。
+    return choice
+
+
 def cmd_login(args):
     state = core.load_state(args)
-    username = args.username or state.get("username") or ""
+    cached = state.get("username") or ""
+    username = args.username or ""
     if not username:
-        username = _interactive_prompt("账号(手机号)")
+        username = _choose_username_with_cached(cached, _interactive_prompt)
     if not username:
         raise core.CmccError("username is required")
     password = args.password
     if not password:
-        password = getpass.getpass("密码(输入不回显): ")
+        password = getpass.getpass("密码(输入不回显)：")
     if not password:
         raise core.CmccError("password is required")
-    _password_login_with_retry(username, password, args.state, save_password=args.save_password)
+    # 默认保存密码到项目内 .runtime/state.json，便于 token 失效时自动重登。
+    _password_login_with_retry(username, password, args.state, save_password=(args.save_password or True))
 
 
 def cmd_set_profile(args):
@@ -192,9 +240,9 @@ def cmd_set_profile(args):
 
 
 def cmd_list(args):
-    items = cloud.list_desktops(args.state)
+    items = cloud.list_desktops(active_state)
     for index, item in enumerate(items):
-        print(f"{index}: userServiceId={item.get('userServiceId')} vmName={item.get('vmName') or ''} spuCode={item.get('spuCode') or ''} sku={item.get('skuName') or ''} status={item.get('vmStatusShow') or item.get('vmStatus')}")
+        print(f"{index}：userServiceId={item.get('userServiceId')} vmName={item.get('vmName') or ''} spuCode={item.get('spuCode') or ''} sku={item.get('skuName') or ''} status={item.get('vmStatusShow') or item.get('vmStatus')}")
 
 
 def cmd_select(args):
@@ -242,7 +290,11 @@ def cmd_boot(args):
 
 
 def cmd_keepalive_once(args):
-    _print(desktop_keepalive.once(args.user_service_id, args.state, send_probe=args.probe, send_point=args.point, send_disconnect_time=args.disconnect_time, send_connect_events=args.connect_events, use_firm_auth=not args.no_firm_auth))
+    result = desktop_keepalive.once(args.user_service_id, args.state, send_probe=args.probe, send_point=args.point, send_disconnect_time=args.disconnect_time, send_connect_events=args.connect_events, use_firm_auth=not args.no_firm_auth)
+    if args.disconnect_time and not args.probe and not args.point and not args.connect_events:
+        print(result.get("disconnectTime", ""), flush=True)
+        return
+    _print(result)
 
 
 def cmd_mqtt_keepalive(args):
@@ -270,7 +322,10 @@ def cmd_keepalive(args):
 
 def _interactive_prompt(message, default=None):
     suffix = f" [{default}]" if default is not None else ""
-    raw = input(f"{message}{suffix}: ").strip()
+    try:
+        raw = input(f"{message}{suffix}：").strip()
+    except (EOFError, KeyboardInterrupt):
+        raise core.CmccError("已取消输入")
     return raw or (default if default is not None else "")
 
 
@@ -294,9 +349,9 @@ def _password_login_with_retry(username, password, state_path, save_password=Fal
             if attempt >= max_attempts:
                 raise core.CmccError(
                     f"密码错误次数过多（已尝试 {max_attempts} 次），请确认账号密码后重试") from err
-            print(f"登录失败: {err}")
+            print(f"登录失败：{err}")
             try:
-                retry = getpass.getpass("请重新输入密码(输入不回显): ")
+                retry = getpass.getpass("请重新输入密码(输入不回显)：")
             except (EOFError, KeyboardInterrupt):
                 raise core.CmccError("已取消密码输入") from err
             if not retry:
@@ -316,61 +371,59 @@ def _interactive_sleep(seconds, started, run_seconds):
 
 def _interactive_login(args):
     state = core.load_state(args)
-    username = args.username or state.get("username") or ""
+    cached = state.get("username") or ""
+    username = args.username or ""
     if not username:
-        username = _interactive_prompt("账号(手机号)")
+        username = _choose_username_with_cached(cached, _interactive_prompt)
     if not username:
         raise core.CmccError("username is required")
     password = args.password
     if not password:
         if args.non_interactive:
             raise core.CmccError("password is required in --non-interactive mode")
-        password = getpass.getpass("密码(输入不回显): ")
+        try:
+            password = getpass.getpass("密码(输入不回显)：")
+        except (EOFError, KeyboardInterrupt):
+            raise core.CmccError("已取消密码输入")
     if not password:
         raise core.CmccError("password is required")
-    password = _password_login_with_retry(username, password, args.state, save_password=False)
+    password = _password_login_with_retry(username, password, args.state, save_password=True)
     return username, password
 
 
 def _interactive_select(args):
-    items = cloud.list_desktops(args.state)
+    items = cloud.list_desktops(active_state)
     if not items:
         raise core.CmccError("no cloud PC found for this account")
-    targets = cloud.target_desktops(items)
-    if not targets:
-        raise core.CmccError("target cloud PC not found: 畅享版月包")
-    print(f"\n发现 {len(items)} 台云电脑（其中畅享版月包 {len(targets)} 台，仅畅享版月包支持保活）：")
-    default_index = next(index for index, item in enumerate(items) if cloud.is_target_desktop(item))
+    print(f"\n发现 {len(items)} 台云电脑（列表中任意云电脑都可选择）：")
+    default_index = 0
     for index, item in enumerate(items):
-        flag = "畅享版月包" if cloud.is_target_desktop(item) else "不可选(非畅享版月包)"
-        print(f"  {index}: userServiceId={item.get('userServiceId')} "
+        print(f"  {index}：userServiceId={item.get('userServiceId')} "
               f"vmId={item.get('vmId') or ''} spuCode={item.get('spuCode') or ''} "
               f"vmName={item.get('vmName') or ''} "
               f"sku={item.get('skuName') or item.get('productName') or item.get('goodsName') or ''} "
-              f"status={item.get('vmStatusShow') or item.get('vmStatus')} [{flag}]")
+              f"status={item.get('vmStatusShow') or item.get('vmStatus')}")
     chosen = None
     if getattr(args, "user_service_id", None):
         chosen = args.user_service_id
     elif getattr(args, "non_interactive", False):
-        chosen = str(targets[0].get("userServiceId"))
-        print(f"非交互模式自动选择畅享版月包: {chosen}")
+        chosen = str(items[0].get("userServiceId"))
+        print(f"非交互模式自动选择第1台云电脑：{chosen}")
     else:
-        raw = _interactive_prompt("选择畅享版月包序号", default=str(default_index)) or str(default_index)
+        raw = _interactive_prompt("选择云电脑序号", default=str(default_index)) or str(default_index)
         try:
             idx = int(raw)
         except ValueError:
-            raise core.CmccError(f"invalid index: {raw}")
+            raise core.CmccError(f"invalid index：{raw}")
         if idx < 0 or idx >= len(items):
-            raise core.CmccError(f"index out of range: {idx}")
+            raise core.CmccError(f"index out of range：{idx}")
         picked = items[idx]
-        if not cloud.is_target_desktop(picked):
-            raise core.CmccError("refusing non-target cloud PC; interactive keepalive only supports 畅享版月包")
         chosen = str(picked.get("userServiceId"))
     chosen_item = next((item for item in items if str(item.get("userServiceId")) == str(chosen)), None)
-    if not chosen_item or not cloud.is_target_desktop(chosen_item):
-        raise core.CmccError("refusing non-target cloud PC; interactive keepalive only supports 畅享版月包")
+    if not chosen_item:
+        raise core.CmccError(f"selected cloud PC not found：{chosen}")
     selected = cloud.select_desktop(chosen, args.state)
-    print(f"已选择畅享版月包: userServiceId={chosen} vmId={selected.get('vmId') or ''} vmName={selected.get('vmName') or ''}")
+    print(f"已选择云电脑：userServiceId={chosen} vmId={selected.get('vmId') or ''} vmName={selected.get('vmName') or ''}")
     return chosen
 
 
@@ -408,6 +461,27 @@ def cmd_interactive(args):
     target = _interactive_select(args_ns)
     report["selectedUserServiceId"] = target
 
+    # 首次进入任务阶段：全局只执行这 1 次状态检测/开机逻辑。
+    # 后续循环只做保活；状态打印仅展示，不联动开机。
+    print("\n[首次开机检查] 正在检测云电脑状态……", flush=True)
+    try:
+        first_status = cloud.status(target, state_path)
+        first_status_text = first_status.get("vmStatusShow") or first_status.get("vmStatus")
+        print(f"[首次开机检查] 当前状态：{first_status_text} running={cloud.is_running(first_status)}", flush=True)
+        report["initialPowerStatus"] = first_status
+        if not cloud.is_running(first_status):
+            print("[首次开机检查] 云电脑未运行，自动开机（只执行这一次，无需二次确认）……", flush=True)
+            boot_result = cag_boot.ensure_running(target, state_path, args.boot_wait, args.boot_timeout)
+            report["initialBoot"] = boot_result
+            print("[首次开机检查] 开机流程完成，马上进入第一轮保活。", flush=True)
+        else:
+            print("[首次开机检查] 云电脑已运行，跳过开机，马上进入第一轮保活。", flush=True)
+    except Exception as err:
+        report["initialBootError"] = str(err)
+        print(f"[首次开机检查] 首次状态检测/开机失败，任务终止，不进入保活：{err}", flush=True)
+        _write_report(report, args.report_file)
+        return
+
     heartbeat_interval = max(1, int(args.heartbeat_interval))
     status_interval = max(1, int(args.status_interval))
     run_seconds = int(args.duration or 0)
@@ -431,14 +505,14 @@ def cmd_interactive(args):
             use_firm_auth=not args.no_firm_auth,
         ).get("disconnectTime")
         report["initialDisconnectTime"] = initial_disconnect
-        print(f"保活前getDisconnectTime: {initial_disconnect}", flush=True)
+        _print_disconnect_time(initial_disconnect)
     except Exception as err:
         report["initialDisconnectTimeError"] = str(err)
-        print(f"保活前getDisconnectTime失败(可恢复): {err}", flush=True)
+        print(f"[官方自动关机时长]获取失败：{err}", flush=True)
 
-    print(f"\n进入保活循环: 心跳间隔={heartbeat_interval}s 状态打印间隔={status_interval}s "
+    print(f"\n进入保活循环：心跳间隔={heartbeat_interval}s 状态打印间隔={status_interval}s "
           f"运行时长={'永久' if not run_seconds else str(run_seconds) + 's'}")
-    print("提示: 当前 desktop HTTP keepalive 路由尚未被证明可独立保活，"
+    print("提示：当前 desktop HTTP keepalive 路由尚未被证明可独立保活，"
           "失败会退避重试，不会静默退出。Ctrl+C 可中断。\n")
     _append_log(log_file, f"[{core.short_time()}] 开始保活 target={target} interval={heartbeat_interval}s duration={run_seconds}s initialDisconnectTime={initial_disconnect}")
 
@@ -454,8 +528,8 @@ def cmd_interactive(args):
                 valid = token_ret[0] if isinstance(token_ret, (tuple, list)) else bool(token_ret)
                 if not valid:
                     auth.password_login(username, password, state_path, save_password=False)
-                print(f"[{core.short_time()}] [{count}] 开始保活轮次", flush=True)
-                _append_log(log_file, f"[{core.short_time()}] [{count}] round-start")
+                print(f"[{core.short_time()}] 保活连接#{count} 开始", flush=True)
+                _append_log(log_file, f"[{core.short_time()}] 保活连接#{count} 开始")
                 result = desktop_keepalive.once(
                     target, state_path,
                     send_probe=args.probe, send_point=args.point,
@@ -484,17 +558,17 @@ def cmd_interactive(args):
                 if time.time() - last_status_print >= status_interval:
                     try:
                         snap = cloud.status(target, state_path)
-                        print(f"  状态: {snap.get('vmStatusShow') or snap.get('vmStatus')} "
+                        print(f"  状态：{snap.get('vmStatusShow') or snap.get('vmStatus')} "
                               f"running={cloud.is_running(snap)}", flush=True)
                     except Exception as err:
-                        print(f"  状态查询失败: {err}", flush=True)
+                        print(f"  状态查询失败：{err}", flush=True)
                     last_status_print = time.time()
             except KeyboardInterrupt:
                 raise
             except Exception as err:
                 report["failedRounds"] += 1
                 report["lastError"] = str(err)
-                print(f"[{core.short_time()}] [{count}] 发送流量日志异常(可恢复): {err} -> {backoff}s 后重试", flush=True)
+                print(f"[{core.short_time()}] [{count}] 发送流量日志异常(可恢复)：{err} -> {backoff}s 后重试", flush=True)
                 _append_log(log_file, f"[{core.short_time()}] [{count}] 发送流量日志异常(可恢复): {err} backoff={backoff}s")
                 if run_seconds and time.time() - started >= run_seconds:
                     break
@@ -510,12 +584,13 @@ def cmd_interactive(args):
     finally:
         report["finishedAt"] = core.shanghai_now().isoformat()
         report["elapsedSeconds"] = int(time.time() - started)
+        _append_log(log_file, f"[{core.short_time()}] 保活连接结束 rounds={report['rounds']} accepted={report['acceptedRounds']} failed={report['failedRounds']}")
         _append_log(log_file, f"[{core.short_time()}] 保活结束 rounds={report['rounds']} accepted={report['acceptedRounds']} failed={report['failedRounds']}")
         _write_report(report, args.report_file)
         if args.report_file:
-            print(f"报告已写入: {args.report_file}", flush=True)
+            print(f"报告已写入：{args.report_file}", flush=True)
         if log_file:
-            print(f"日志已写入: {log_file}", flush=True)
+            print(f"日志已写入：{log_file}", flush=True)
     _print(report)
 
 
@@ -1120,34 +1195,37 @@ def _product_keepalive_report(route_name="product-keepalive", stage="route-check
 
 
 def _run_scg_keepalive(args, auth, route, vm_id, report, started):
-    """Dispatch to the SCG keepalive binary (B keepalive.go SCG branch)."""
+    """Dispatch to the pure-Python SCG route (B keepalive.go SCG branch)."""
     import time
     from . import scg_route
-    report["stage"] = "scg-keepalive"
+    report["stage"] = "scg-cem-connect-info"
     sc_auth_code = product_router.extract_sc_auth_code(auth) or ""
     try:
+        state = core.load_state(args)
+        cfg = core.client_config(state)
+        device_id = core.profile_device_id(state, cfg)
+        connect_info = scg_route.get_connect_info(sc_auth_code, vm_id, device_id=device_id)
+        scg_ip = connect_info["scgIp"]
+        scg_port = connect_info["scgPort"]
+        sc_auth_code = connect_info.get("scAuthCode") or sc_auth_code
+        report["stage"] = "scg-keepalive"
         result = scg_route.run_scg_keepalive(
-            scg_ip="", scg_port="", sc_auth_code=sc_auth_code,
+            scg_ip=scg_ip, scg_port=scg_port, sc_auth_code=sc_auth_code,
             vm_id=vm_id, duration=args.duration, forever=args.forever,
-            binary_path=args.binary, config_dir=args.config_dir)
-    except FileNotFoundError as exc:
-        report["error"] = str(exc)
-        report["nextStep"] = "build the SCG binary: cd scg_go && go build -o cmcc_keepalive ."
-        report["duration"] = round(time.monotonic() - started, 3)
-        _print(report)
-        return
-    except Exception as exc:  # noqa: BLE001 - surface any launch failure
+            user_service_id=str(getattr(args, "user_service_id", "") or ""),
+            state_path=getattr(args, "state", None))
+    except Exception as exc:  # noqa: BLE001 - surface CEM/TCP/TLS/protocol failure
         report["error"] = "%s: %s" % (type(exc).__name__, exc)
-        report["nextStep"] = "inspect SCG binary launch / config"
+        report["nextStep"] = "inspect CEM getConnectInfo / SCG TCP-TLS protocol"
         report["duration"] = round(time.monotonic() - started, 3)
-        _print(report)
-        return
+        _emit_product_report(args, report)
+        return report
 
     if args.forever:
-        # run_scg_keepalive returns a subprocess.Popen for --forever.
+        # Pure-Python SCG keeps looping in-process for --forever; this branch is kept for compatibility.
         report["ok"] = True
         report["stage"] = "scg-keepalive-running"
-        report["nextStep"] = "SCG keepalive running in background (Popen pid=%d); terminate to stop" % result.pid
+        report["nextStep"] = "SCG keepalive running; terminate to stop"
     else:
         ok = (result.returncode == 0)
         report["ok"] = ok
@@ -1155,10 +1233,11 @@ def _run_scg_keepalive(args, auth, route, vm_id, report, started):
         _stderr = result.stderr
         if isinstance(_stderr, bytes):
             _stderr = _stderr.decode("utf-8", "replace")
-        report["error"] = "" if ok else (_stderr.strip() or "SCG binary exited %d" % result.returncode)
-        report["nextStep"] = "" if ok else "inspect binary stderr / CEM GetConnectInfo"
+        report["error"] = "" if ok else (_stderr.strip() or "SCG Python route exited %d" % result.returncode)
+        report["nextStep"] = "" if ok else "inspect SCG Python stderr / CEM GetConnectInfo"
     report["duration"] = round(time.monotonic() - started, 3)
-    _print(report)
+    _emit_product_report(args, report)
+    return report
 
 
 def _run_zte_keepalive(args, auth, route, vm_id, report, started):
@@ -1175,8 +1254,8 @@ def _run_zte_keepalive(args, auth, route, vm_id, report, started):
         report["error"] = "zte_route unavailable: %s" % exc
         report["nextStep"] = "wait for ZTE route (P10) completion before retrying"
         report["duration"] = round(time.monotonic() - started, 3)
-        _print(report)
-        return
+        _emit_product_report(args, report)
+        return report
     try:
         firm = zte_route.ZTEFirmAuth.from_auth_dict(auth)
         material = zte_route.run_material(firm, target_vm_id=vm_id)
@@ -1184,8 +1263,8 @@ def _run_zte_keepalive(args, auth, route, vm_id, report, started):
         report["error"] = "%s: %s" % (type(exc).__name__, exc)
         report["nextStep"] = "inspect ZTE material stage %s" % report["stage"]
         report["duration"] = round(time.monotonic() - started, 3)
-        _print(report)
-        return
+        _emit_product_report(args, report)
+        return report
     md = material.to_dict()
     report["ok"] = md.get("ok", False)
     report["stage"] = md.get("stage") or "zte-keepalive"
@@ -1229,7 +1308,8 @@ def _run_zte_keepalive(args, auth, route, vm_id, report, started):
         report["nextStep"] = "material ok but connect_str missing; cannot dial CAG"
 
     report["duration"] = round(time.monotonic() - started, 3)
-    _print(report)
+    _emit_product_report(args, report)
+    return report
 
 
 def cmd_product_keepalive(args):
@@ -1254,8 +1334,8 @@ def cmd_product_keepalive(args):
         report["reason"] = "firmAuth failed: %s" % exc
         report["nextStep"] = "fix login/account/firmAuth; do not touch protocol"
         report["duration"] = round(time.monotonic() - started, 3)
-        _print(report)
-        return
+        _emit_product_report(args, report)
+        return report
 
     route = product_router.classify_firm_auth_route(auth)
     route.userServiceId = str(selected or "")
@@ -1272,22 +1352,21 @@ def cmd_product_keepalive(args):
         report["error"] = route.reason
         report["nextStep"] = "stop; fix firmAuth fields before any protocol work"
         report["duration"] = round(time.monotonic() - started, 3)
-        _print(report)
-        return
+        _emit_product_report(args, report)
+        return report
 
     if route.kind == product_router.RouteKind.SCG:
-        _run_scg_keepalive(args, auth, route, vm_id, report, started)
-        return
+        return _run_scg_keepalive(args, auth, route, vm_id, report, started)
 
     if route.kind == product_router.RouteKind.ZTE:
-        _run_zte_keepalive(args, auth, route, vm_id, report, started)
-        return
+        return _run_zte_keepalive(args, auth, route, vm_id, report, started)
 
     # Defensive: unknown route kind.
     report["error"] = "unhandled route kind: %s" % route.kind
     report["nextStep"] = "extend product_router with the new route kind"
     report["duration"] = round(time.monotonic() - started, 3)
-    _print(report)
+    _emit_product_report(args, report)
+    return report
 
 
 # ---------------------------------------------------------------------------
@@ -1545,14 +1624,17 @@ def cmd_product_zte_display_check(args):
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="CMCC family cloud PC protocol-level keepalive research")
-    parser.add_argument("--state", default=None, help="state file path")
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    parser = argparse.ArgumentParser(
+        description="移动云电脑保活工具：普通用户直接运行 python3 -m cmcc_cloud_alive，然后按中文提示操作。",
+        epilog="常用：python3 -m cmcc_cloud_alive    高级：python3 -m cmcc_cloud_alive interactive --help",
+    )
+    parser.add_argument("--state", default=None, help="状态文件路径；默认使用项目内 .runtime/state.json")
+    sub = parser.add_subparsers(dest="cmd", required=False, metavar="命令")
 
     p = sub.add_parser("login", help="account login; omit password to use hidden prompt")
     p.add_argument("username", nargs="?", help="account phone number; prompts when omitted")
     p.add_argument("password", nargs="?", help="optional; omit to avoid plaintext shell history")
-    p.add_argument("--save-password", action="store_true", help="store password for unattended 24h re-login; prefer hidden prompt")
+    p.add_argument("--save-password", action="store_true", help="兼容参数；当前默认保存到项目内 state 以便 token 失效自动重登")
     p.set_defaults(func=cmd_login)
 
     p = sub.add_parser("set-profile")
@@ -1639,7 +1721,9 @@ def build_parser():
     p.add_argument("--password", default=None, help="password; prompt hidden if omitted (never logged)")
     p.add_argument("--duration", type=int, default=0, help="run seconds; 0 means run forever")
     p.add_argument("--heartbeat-interval", type=int, default=300, help="keepalive round interval seconds")
-    p.add_argument("--status-interval", type=int, default=60, help="status print interval seconds")
+    p.add_argument("--status-interval", type=int, default=60, help="状态展示间隔秒数；只打印，不触发开机")
+    p.add_argument("--boot-wait", type=int, default=30, help="首次自动开机后的等待秒数")
+    p.add_argument("--boot-timeout", type=int, default=300, help="首次自动开机最长等待秒数")
     p.add_argument("--report-file", default=None, help="write JSON report to this path")
     p.add_argument("--non-interactive", action="store_true", help="skip prompts; auto-select first target")
     p.add_argument("--probe", action="store_true")
@@ -1979,12 +2063,10 @@ def build_parser():
     ip.add_argument("--connect-events", action="store_true")
     ip.add_argument("--no-firm-auth", action="store_true")
     ip.set_defaults(func=cmd_interactive)
-    p.add_argument("--duration", type=int, default=None, help="hold the SCG connection N seconds (binary default 120); 0 = until interrupted")
-    p.add_argument("--forever", action="store_true", help="run the SCG keepalive binary persistently (Popen, returns immediately)")
+    p.add_argument("--duration", type=int, default=None, help="hold each SCG Python keepalive round N seconds (default 60)")
+    p.add_argument("--forever", action="store_true", help="repeat the SCG Python keepalive loop until interrupted")
     p.add_argument("--user-service-id", default=None, help="override the selected user service id")
     p.add_argument("--vm-id", default=None, help="override the target desktop vmId")
-    p.add_argument("--binary", default=None, help="override the SCG keepalive binary path")
-    p.add_argument("--config-dir", default=None, help="override the SCG config directory")
     p.set_defaults(func=cmd_product_keepalive)
 
     p = sub.add_parser("product-zte-material-check")
@@ -2015,19 +2097,527 @@ def build_parser():
     return parser
 
 
+
+class SimpleInputCancelled(Exception):
+    pass
+
+
+def _format_disconnect_time_message(disconnect_time):
+    if isinstance(disconnect_time, dict):
+        data = disconnect_time.get("data")
+        if isinstance(data, dict) and data.get("message"):
+            return str(data.get("message"))
+        if disconnect_time.get("message"):
+            return str(disconnect_time.get("message"))
+    return str(disconnect_time)
+
+
+def _print_disconnect_time(disconnect_time):
+    print(f"[官方自动关机时长]：{_format_disconnect_time_message(disconnect_time)}", flush=True)
+
+
+def _simple_input(prompt, default=None, allow_cancel=True):
+    suffix = f" [{default}]" if default not in (None, "") else ""
+    try:
+        value = input(f"{prompt}{suffix}：").strip()
+    except (EOFError, KeyboardInterrupt) as err:
+        raise SimpleInputCancelled() from err
+    if allow_cancel and value.lower() in ("exit", "quit", "q"):
+        raise SimpleInputCancelled()
+    if value == "" and default is not None:
+        return str(default)
+    return value
+
+
+def _simple_choice(prompt, choices, default=None):
+    """Prompt until the user enters one of choices; empty input uses default."""
+    allowed = {str(choice) for choice in choices}
+    while True:
+        value = _simple_input(prompt, default=default)
+        if value in allowed:
+            return value
+        print(f"输入无效，请输入：{'/'.join(sorted(allowed))}；输入 exit 返回主菜单。", flush=True)
+
+
+def _simple_int(prompt, default=None, min_value=None, max_value=None):
+    """Prompt until the user enters an integer in range; empty input uses default."""
+    while True:
+        value = _simple_input(prompt, default=default)
+        try:
+            number = int(value)
+        except ValueError:
+            print("输入格式错误，请输入数字。", flush=True)
+            continue
+        if min_value is not None and number < min_value:
+            print(f"输入过小，请输入不小于 {min_value} 的数字。", flush=True)
+            continue
+        if max_value is not None and number > max_value:
+            print(f"输入过大，请输入不大于 {max_value} 的数字。", flush=True)
+            continue
+        return number
+
+
+def _safe_profile_name(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    safe = []
+    for ch in text:
+        if ch.isalnum() or ch in ("-", "_", "."):
+            safe.append(ch)
+        elif ch.isspace():
+            safe.append("-")
+    return "".join(safe).strip(".-_")[:60]
+
+
+def _state_label(path):
+    try:
+        state = core.load_state(str(path))
+    except Exception:
+        state = {}
+    parts = []
+    if state.get("username"):
+        parts.append(str(state.get("username")))
+    desktop = state.get("desktopName") or state.get("selectedDesktopName") or state.get("cloudPcName")
+    if desktop:
+        parts.append(str(desktop))
+    service_id = state.get("userServiceId") or state.get("selectedUserServiceId")
+    if service_id:
+        parts.append(str(service_id))
+    return " / ".join(parts) if parts else Path(path).stem
+
+
+def _known_state_files(default_state=None):
+    files = []
+    seen = set()
+    candidates = []
+    if default_state:
+        candidates.append(Path(default_state))
+    candidates.append(core.state_path(None))
+    candidates.extend(sorted(Path(".runtime/profiles").glob("*.json")))
+    candidates.extend(sorted(Path(".runtime").glob("*.json")))
+    for path in candidates:
+        path = Path(path)
+        if not path.exists():
+            continue
+        try:
+            key = str(path.resolve())
+        except OSError:
+            key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        files.append(path)
+    return files
+
+
+def _next_profile_path():
+    root = Path(".runtime/profiles")
+    root.mkdir(parents=True, exist_ok=True)
+    for i in range(1, 1000):
+        path = root / f"desktop{i}.json"
+        if not path.exists():
+            return path
+    raise core.CmccError("保活档案太多，请清理 .runtime/profiles 后再试")
+
+
+def _choose_state_profile(args):
+    """Friendly state/profile chooser for non-programmers.
+
+    Users should not have to understand --state.  One keepalive task maps to
+    one json profile automatically.
+    """
+    cli_state = getattr(args, "state", None)
+    if cli_state:
+        return cli_state, Path(cli_state).exists()
+    files = _known_state_files()
+    print("\n请选择保活档案：", flush=True)
+    if files:
+        for i, path in enumerate(files, 1):
+            print(f"{i}. 继续使用：{_state_label(path)}  ({path})", flush=True)
+        print(f"{len(files) + 1}. 新增一个账号/云桌面档案（自动创建独立json，可多开）", flush=True)
+        idx = _simple_int("请选择", default="1", min_value=1, max_value=len(files) + 1)
+        if 1 <= idx <= len(files):
+            selected = str(files[idx - 1])
+            print(f"当前使用档案：{selected}", flush=True)
+            return selected, True
+    else:
+        print("1. 新增一个账号/云桌面档案（自动创建独立json，可多开）", flush=True)
+        _simple_choice("按回车继续", choices=("1",), default="1")
+    label = _simple_input("给这个保活档案起个名字（可直接回车）", default="")
+    safe = _safe_profile_name(label)
+    path = Path(".runtime/profiles") / f"{safe}.json" if safe else _next_profile_path()
+    if path.exists():
+        base = _safe_profile_name(path.stem) or "desktop"
+        root = Path(".runtime/profiles")
+        for i in range(2, 1000):
+            candidate = root / f"{base}-{i}.json"
+            if not candidate.exists():
+                path = candidate
+                break
+    path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"已创建/使用新档案：{path}", flush=True)
+    print("提示：需要同时保活多台云电脑时，再开一个终端运行同一条命令，并选择/新增另一个档案即可。", flush=True)
+    return str(path), False
+
+
+def _desktop_display_name(item):
+    for key in ("vmName", "name", "desktopName", "cloudPcName", "productName", "goodsName", "skuName"):
+        value = item.get(key)
+        if value:
+            return str(value)
+    return str(item.get("userServiceId") or item.get("vmId") or "未命名云桌面")
+
+
+def _desktop_spu_code(item):
+    for key in ("spuCode", "skuCode", "productCode", "skuId"):
+        value = item.get(key)
+        if value:
+            return str(value)
+    return "-"
+
+
+def _print_desktop_list(items):
+    print("\n可用云桌面列表：", flush=True)
+    for idx, item in enumerate(items, 1):
+        name = _desktop_display_name(item)
+        ident = item.get("userServiceId") or item.get("vmId") or item.get("id") or "-"
+        spu = _desktop_spu_code(item)
+        print(f"[{idx}] {name} / {ident} | spuCode：{spu}", flush=True)
+
+
+def _status_line(prefix, snap):
+    return (f"{prefix} 状态：{snap.get('vmStatusShow') or snap.get('vmStatus')} "
+            f"running={cloud.is_running(snap)}")
+
+
+def _simple_ensure_token(state_path, context="接口调用"):
+    """Ensure the selected profile has a valid token; auto re-login with saved password if expired."""
+    try:
+        valid, response = token.check_token(state_path)
+        if valid:
+            return True
+        code = response.get("code") if isinstance(response, dict) else None
+        print(f"[{core.short_time()}] {context}：token已失效/不可用(code={code})，使用档案内账号密码自动重新登录...", flush=True)
+        token.ensure_token(state_path, relogin=True)
+        print(f"[{core.short_time()}] {context}：token已自动刷新", flush=True)
+        return True
+    except Exception as err:
+        print(f"[{core.short_time()}] {context}：token检查/自动重登失败：{err}", flush=True)
+        raise
+
+
+def _simple_refresh_token_if_needed(state_path, context="账号token检测"):
+    """Check token status and re-login only when the token is invalid."""
+    try:
+        valid, response = token.check_token(state_path)
+        if valid:
+            print(f"[{core.short_time()}] {context}：token有效", flush=True)
+            return True
+        code = response.get("code") if isinstance(response, dict) else None
+        print(f"[{core.short_time()}] {context}：token已失效/不可用(code={code})，自动登录刷新token...", flush=True)
+        token.ensure_token(state_path, relogin=True)
+        print(f"[{core.short_time()}] {context}：token已自动刷新", flush=True)
+        return True
+    except Exception as err:
+        print(f"[{core.short_time()}] {context}：token检测/自动刷新失败：{err}", flush=True)
+        return False
+
+
+def _simple_status_tick(target, state_path):
+    try:
+        snap = cloud.status(target, state_path)
+        state_text = "开机运行中" if cloud.is_running(snap) else "已关机"
+        print(f"[{core.short_time()}] 云桌面状态：{state_text}", flush=True)
+    except Exception as err:
+        print(f"[{core.short_time()}] 每分钟状态检测失败：{err}", flush=True)
+
+
+def _simple_keepalive_args(target, state_path, traffic_seconds):
+    """Build an argparse-compatible Namespace for an interactive keepalive round.
+
+    The interactive runner passes a userServiceId string, while some internal
+    callers may pass a desktop dict.  Keep conversion in one place so protocol
+    branches never accidentally assume dict shape again.
+    """
+    if isinstance(target, dict):
+        user_service_id = (
+            target.get("userServiceId")
+            or target.get("userServiceID")
+            or target.get("id")
+        )
+        vm_id = target.get("vmId") or target.get("vmID") or target.get("uuid")
+    else:
+        user_service_id = str(target or "")
+        vm_id = None
+    return argparse.Namespace(
+        state=state_path,
+        user_service_id=user_service_id,
+        vm_id=vm_id,
+        duration=max(1, int(traffic_seconds)),
+        forever=False,
+        summary_only=True,
+    )
+
+
+def _simple_zte_keepalive_args(target, state_path, traffic_seconds):
+    """Backward-compatible alias for the proven ZTE long-test argument builder."""
+    return _simple_keepalive_args(target, state_path, traffic_seconds)
+
+
+def _simple_forced_keepalive(target, state_path, protocol, traffic_seconds):
+    """Run the protocol explicitly selected in the interactive menu.
+
+    This intentionally does *not* call ``cmd_product_keepalive`` because that
+    command auto-classifies firmAuth (scAuthCode wins over ZTE fields).  In the
+    simple customer UI, selecting ZTE must force the ZTE long-test path and
+    selecting SCG must force the pure-Python SCG path; if the selected protocol
+    fields are absent, the selected branch should fail clearly instead of
+    silently switching to the other protocol.
+    """
+    import time
+    started = time.monotonic()
+    args = _simple_keepalive_args(target, state_path, traffic_seconds)
+    selected = cloud.selected_user_service_id(args.state, args.user_service_id)
+    args.user_service_id = selected
+    report = _product_keepalive_report()
+    report["userServiceId"] = str(selected or "")
+    report["kind"] = str(protocol or "").lower()
+    report["reason"] = "interactive forced protocol=%s" % protocol
+    ns_args = core.argparse.Namespace(state=args.state, user_service_id=selected)
+    try:
+        auth = core.get_firm_auth(ns_args)
+    except Exception as exc:  # noqa: BLE001 - gate must report, not crash
+        report["error"] = str(exc)
+        report["stage"] = "%s-firmAuth-failed" % str(protocol or "").lower()
+        report["nextStep"] = "fix login/account/firmAuth; selected protocol was not changed automatically"
+        report["duration"] = round(time.monotonic() - started, 3)
+        _emit_product_report(args, report)
+        return report
+
+    route = product_router.classify_firm_auth_route(auth)
+    route.userServiceId = str(selected or "")
+    vm_id = args.vm_id or route.vmId or str(auth.get("vmId") or auth.get("vmID") or auth.get("uuid") or "")
+    report["vmId"] = vm_id
+    report["firmAuthSummary"] = product_router.redacted_firm_auth_summary(auth)
+
+    if str(protocol).upper() == "SCG":
+        return _run_scg_keepalive(args, auth, route, vm_id, report, started)
+    return _run_zte_keepalive(args, auth, route, vm_id, report, started)
+
+
+def _simple_run_keepalive(target, state_path, protocol, interval_minutes, traffic_seconds, mode):
+    interval_seconds = max(1, int(interval_minutes) * 60)
+    traffic_seconds = max(1, int(traffic_seconds))
+    _simple_ensure_token(state_path, "首次开机检查前")
+    print(f"\n[{core.short_time()}] 首次开机检查：只在任务开始时检测一次状态，必要时开机。", flush=True)
+    pre_snap = cloud.status(target, state_path)
+    if cloud.is_running(pre_snap):
+        print(f"[{core.short_time()}] 云桌面状态：开机运行中，跳过开机。", flush=True)
+    else:
+        if str(protocol).upper() == "SCG":
+            print(
+                f"[{core.short_time()}] 检测到云桌面处于关机状态；当前选择的是SCG协议，"
+                "将按Go版本逻辑调用getConnectInfo触发云桌面开机，并在SCG连接前等待readyStatus=1。",
+                flush=True,
+            )
+        else:
+            print(f"[{core.short_time()}] 检测到云桌面处于关机状态，正在执行开机...", flush=True)
+            try:
+                cag_boot.ensure_running(target, state_path, boot_wait=180, timeout=30, refresh_wait=5)
+            except Exception as boot_err:
+                print(f"[{core.short_time()}] 云桌面开机失败，任务终止，请检查账号权限或网络 ({boot_err})", flush=True)
+                return
+            post_snap = cloud.status(target, state_path)
+            if cloud.is_running(post_snap):
+                print(f"[{core.short_time()}] 云桌面开机成功", flush=True)
+            else:
+                print(f"[{core.short_time()}] 云桌面开机失败，任务终止，请检查账号权限或网络", flush=True)
+                return
+    try:
+        disc = desktop_keepalive.disconnect_time(target, state_path)
+        _print_disconnect_time(disc)
+    except Exception as err:
+        print(f"[官方自动关机时长]获取失败：{err}", flush=True)
+
+    print("\n开始保活：", flush=True)
+    print("- 后续每轮保活前不再检测开机、不再触发开机", flush=True)
+    print("- 每分钟状态检测只打印展示，不联动任何开机操作", flush=True)
+    print("- Ctrl+C 可退出\n", flush=True)
+    round_no = 0
+    last_status = 0.0
+    try:
+        while True:
+            round_no += 1
+            _simple_ensure_token(state_path, f"第{round_no}轮保活前")
+            # Start round timing only after all pre-flight checks are done.
+            # Token refresh/re-login time must not consume the user-configured
+            # keepalive traffic duration or the configured round interval.
+            started = time.time()
+            print(f"[{core.short_time()}] 第{round_no}轮保活开始 protocol={protocol} duration={traffic_seconds}s", flush=True)
+            if protocol == "SCG":
+                print(
+                    f"[{core.short_time()}] 第{round_no}轮SCG保活：手选SCG，调用纯Python SCG协议 "
+                    f"duration={traffic_seconds}s userServiceId={target}",
+                    flush=True,
+                )
+                product_report = _simple_forced_keepalive(target, state_path, "SCG", traffic_seconds) or {}
+                print(
+                    f"[{core.short_time()}] 第{round_no}轮SCG保活完成 "
+                    f"kind={product_report.get('kind')} ok={product_report.get('ok')} "
+                    f"stage={product_report.get('stage')} duration={product_report.get('duration')}s",
+                    flush=True,
+                )
+            else:
+                # ZTE must use the same keepalive path that passed the long-test:
+                # _run_zte_keepalive -> CAG/mux/raw-SPICE session.  Do NOT call
+                # cmd_product_keepalive here: that command auto-classifies firmAuth
+                # and would switch to SCG when scAuthCode is present, violating the
+                # customer's explicit menu choice.
+                print(
+                    f"[{core.short_time()}] 第{round_no}轮ZTE保活：手选ZTE，调用长测同款CAG/mux/raw-SPICE "
+                    f"duration={traffic_seconds}s userServiceId={target}",
+                    flush=True,
+                )
+                product_report = _simple_forced_keepalive(target, state_path, "ZTE", traffic_seconds) or {}
+                print(
+                    f"[{core.short_time()}] 第{round_no}轮ZTE保活完成 "
+                    f"kind={product_report.get('kind')} ok={product_report.get('ok')} "
+                    f"stage={product_report.get('stage')} duration={product_report.get('duration')}s",
+                    flush=True,
+                )
+            _simple_status_tick(target, state_path)
+            if str(mode) == "1":
+                print(f"[{core.short_time()}] 保活结束", flush=True)
+                print("单次保活任务已完成", flush=True)
+                return
+            while time.time() - started < interval_seconds:
+                remain = interval_seconds - (time.time() - started)
+                time.sleep(min(60, max(1, int(remain))))
+                if time.time() - last_status >= 60:
+                    _simple_status_tick(target, state_path)
+                    last_status = time.time()
+    except KeyboardInterrupt:
+        print("\n收到中断，已退出保活。", flush=True)
+
+
+def cmd_simple_repl(args):
+    print("移动云电脑保活工具", flush=True)
+    print("请输入命令：login 登录并开始保活；help 查看帮助；exit 退出。", flush=True)
+    while True:
+        try:
+            cmd = input("cmcc> ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n已退出。", flush=True)
+            return
+        if cmd == "":
+            continue
+        if cmd in ("exit", "quit", "q"):
+            print("已退出。", flush=True)
+            return
+        if cmd in ("help", "?"):
+            print("可用命令：login / help / exit", flush=True)
+            continue
+        if cmd != "login":
+            print("未知命令。请输入 login、help 或 exit。", flush=True)
+            continue
+        try:
+            active_state, existing_profile = _choose_state_profile(args)
+            state = core.load_state(active_state)
+            cached_username = state.get("username") or ""
+            if existing_profile and cached_username:
+                username = cached_username
+                print(f"使用档案账号：{username}", flush=True)
+            else:
+                username = _choose_username_with_cached(cached_username, _simple_input)
+            if not username:
+                print("账号不能为空。", flush=True)
+                continue
+            cached_password = state.get("password") if username == cached_username else ""
+            login_required = True
+            if existing_profile and username == cached_username:
+                valid_token, token_response = token.check_token(active_state)
+                if valid_token:
+                    login_required = False
+                    print("档案内token仍有效，跳过重新登录。", flush=True)
+                elif cached_password:
+                    password = cached_password
+                    code = token_response.get("code") if isinstance(token_response, dict) else ""
+                    print(f"档案内token已失效/不可用(code={code})，使用缓存密码重新登录。", flush=True)
+                else:
+                    password = _simple_input("请输入密码")
+            elif cached_password:
+                print("检测到该账号已缓存密码，回车可直接使用缓存密码。", flush=True)
+                password = _simple_input("请输入密码", default="使用缓存密码")
+                if password == "使用缓存密码":
+                    password = cached_password
+            else:
+                password = _simple_input("请输入密码")
+            if login_required:
+                if not password:
+                    print("密码不能为空。", flush=True)
+                    continue
+                print("正在登录...", flush=True)
+                auth.password_login(username, password, active_state, save_password=True)
+                print("登录成功。", flush=True)
+            items = cloud.list_desktops(active_state)
+            if not items:
+                print("没有获取到云桌面。", flush=True)
+                continue
+            _print_desktop_list(items)
+            index = _simple_int("请选择云桌面序号", default="1", min_value=1, max_value=len(items))
+            selected = items[index - 1]
+            target = str(selected.get("userServiceId") or "")
+            if not target:
+                print("所选云桌面缺少 userServiceId，无法继续。", flush=True)
+                continue
+            cloud.select_desktop(target, active_state, skip_target_assert=True)
+            print(f"已选择：{_desktop_display_name(selected)} / {target} | spuCode：{_desktop_spu_code(selected)}", flush=True)
+            print("\n请选择保活协议：", flush=True)
+            print("1. ZTE", flush=True)
+            print("2. SCG", flush=True)
+            proto_pick = _simple_choice("协议", choices=("1", "2"), default="1")
+            protocol = "SCG" if proto_pick == "2" else "ZTE"
+            try:
+                disc = desktop_keepalive.disconnect_time(target, active_state)
+                _print_disconnect_time(disc)
+            except Exception as err:
+                print(f"[官方自动关机时长]获取失败：{err}", flush=True)
+            interval_minutes = _simple_int("请输入保活间隔分钟", default="5", min_value=1)
+            traffic_seconds = _simple_int("请输入单次流量持续秒", default="60", min_value=1)
+            print("\n请选择模式：", flush=True)
+            print("1. 单轮", flush=True)
+            print("2. 永久", flush=True)
+            mode = _simple_choice("模式", choices=("1", "2"), default="1")
+            if mode not in ("1", "2"):
+                mode = "1"
+            _simple_run_keepalive(target, active_state, protocol, interval_minutes, traffic_seconds, mode)
+        except SimpleInputCancelled:
+            print("已返回主菜单。", flush=True)
+        except core.CmccError as err:
+            print(f"错误：{err}", flush=True)
+            if err.response is not None:
+                _print(err.response)
+        except ValueError as err:
+            print(f"输入格式错误：{err}", flush=True)
+
 def raise_legacy(args):
     raise core.CmccError("use bin/cmcc_cloud_alive.py for legacy analyze/source-audit commands during migration")
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not getattr(args, "cmd", None):
+        cmd_simple_repl(args)
+        return 0
     if args.cmd == "logout" and not args.desktop and not args.account:
         args.desktop = True
         args.account = True
     try:
         args.func(args)
     except core.CmccError as err:
-        print(f"Error: {err}")
+        print(f"Error：{err}")
         if err.response is not None:
             _print(err.response)
         return 1
