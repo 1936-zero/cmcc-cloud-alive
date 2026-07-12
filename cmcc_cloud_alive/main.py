@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import account_keepalive, auth, cag_boot, cag_keepalive, cloud, core, desktop_keepalive, logout, mqtt_keepalive, power_monitor, probe, product_router, protocol_runner, rap_zime, spice_protocol, strategy, token, trace_timeline, verified_run, zime_native_bridge, zime_probe
+from . import account_keepalive, auth, cag_boot, cag_keepalive, cloud, core, desktop_keepalive, logout, mqtt_keepalive, power_monitor, probe, product_pin, product_router, protocol_runner, rap_zime, spice_protocol, strategy, token, trace_timeline, verified_run, zime_native_bridge, zime_probe
 
 
 def _print(obj):
@@ -240,7 +240,7 @@ def cmd_set_profile(args):
 
 
 def cmd_list(args):
-    items = cloud.list_desktops(active_state)
+    items = cloud.list_desktops(args.state)
     for index, item in enumerate(items):
         print(f"{index}：userServiceId={item.get('userServiceId')} vmName={item.get('vmName') or ''} spuCode={item.get('spuCode') or ''} sku={item.get('skuName') or ''} status={item.get('vmStatusShow') or item.get('vmStatus')}")
 
@@ -392,7 +392,7 @@ def _interactive_login(args):
 
 
 def _interactive_select(args):
-    items = cloud.list_desktops(active_state)
+    items = cloud.list_desktops(args.state)
     if not items:
         raise core.CmccError("no cloud PC found for this account")
     print(f"\n发现 {len(items)} 台云电脑（列表中任意云电脑都可选择）：")
@@ -1194,8 +1194,105 @@ def _product_keepalive_report(route_name="product-keepalive", stage="route-check
     }
 
 
+
+def _report_product_pin_fields(report):
+    """Extract product pin ids from report (top-level or nested product_pin).
+
+    Keys accepted (first non-empty wins per dimension):
+      usid: userServiceId / selectedUserServiceId / usid
+      vmid: vmId / lastVmId / vmid
+      spu:  lastSpuCode / spuCode / spu
+    Nested dict under report["product_pin"] is also scanned.
+    firmAuthSummary (product path) is also scanned so spuCode/lastSpuCode
+    present only under the redacted firmAuth blob still pin-match (T50 residual).
+    Returns (usid, vmid, spu) as strings or None when absent/empty.
+    """
+    nested = report.get("product_pin") if isinstance(report.get("product_pin"), dict) else {}
+    firm = report.get("firmAuthSummary") if isinstance(report.get("firmAuthSummary"), dict) else {}
+
+    def _pick(*keys):
+        for src in (report, nested, firm):
+            for k in keys:
+                v = src.get(k)
+                if v is None:
+                    continue
+                s = str(v).strip()
+                if s:
+                    return s
+        return None
+
+    usid = _pick("userServiceId", "selectedUserServiceId", "usid")
+    vmid = _pick("vmId", "lastVmId", "vmid")
+    spu = _pick("lastSpuCode", "spuCode", "spu")
+    return usid, vmid, spu
+
+
+def _product_pin_matches(report):
+    """T17/R7: fail-closed product-id gate for business_ok.
+
+    - all three pin fields missing => False (cannot prove correct product)
+    - any present field must equal product_pin.PRODUCT_*
+    - mismatch => False
+    Pure function on report dict; no I/O / no LIVE.
+    """
+    usid, vmid, spu = _report_product_pin_fields(report)
+    if usid is None and vmid is None and spu is None:
+        return False
+    if usid is not None and usid != product_pin.PRODUCT_USID:
+        return False
+    if vmid is not None and vmid != product_pin.PRODUCT_VMID:
+        return False
+    if spu is not None and spu != product_pin.PRODUCT_SPU:
+        return False
+    # At least one field present and all present fields match; require full triad
+    # for business plane (fail-closed residual R7).
+    if usid is None or vmid is None or spu is None:
+        return False
+    return True
+
+
+def compute_business_ok(report, forever=False):
+    """D3/P07/T17: J* business-plane gate (fail-closed). Never true for tls_hold/forever.
+
+    Mode plane (`ok`) may be True under tls_hold; business_ok stays False.
+    VM plane requires multi-sample throughout (P06): vm_running is True AND
+    vm_sample_count >= 2. Single-sample or missing samples => False.
+    Accepts either vm_running or vm_running_throughout as the throughout flag.
+    T17/R7: product pin (usid/vmId/spu) must match PRODUCT_* when present;
+    missing pin triad fail-closes business_ok even if mode/VM plane is green.
+    """
+    if forever:
+        return False
+    mode = str(report.get("keepalive_mode") or "").lower()
+    if mode != "spice":
+        return False
+    # Multi-sample floor (P06): wall/process ok alone is not business proof
+    sample_count = int(report.get("vm_sample_count") or 0)
+    if sample_count < 2:
+        return False
+    vm_flag = report.get("vm_running_throughout")
+    if vm_flag is None:
+        vm_flag = report.get("vm_running")
+    if not (
+        report.get("ok")
+        and report.get("spice_ok")
+        and not report.get("degraded")
+        and vm_flag is True
+    ):
+        return False
+    # T17 residual R7: product-id mismatch / missing pin fail-closes business
+    return _product_pin_matches(report)
+
+
 def _run_scg_keepalive(args, auth, route, vm_id, report, started):
-    """Dispatch to the pure-Python SCG route (B keepalive.go SCG branch)."""
+    """Dispatch to the pure-Python SCG route (B keepalive.go SCG branch).
+
+    Platform-maintenance soft-recover (ZTE parity):
+      - Initial CEM getConnectInfo failure is tagged recoverable / platform_maintenance
+        and does **not** kill an interactive forever outer loop (caller continues).
+      - forever mode passes reconnect_fn so each recovery cycle re-fetches
+        getConnectInfo (scgIp/port/scAuthCode may change after mass power-off).
+    """
     import time
     from . import scg_route
     report["stage"] = "scg-cem-connect-info"
@@ -1204,37 +1301,207 @@ def _run_scg_keepalive(args, auth, route, vm_id, report, started):
         state = core.load_state(args)
         cfg = core.client_config(state)
         device_id = core.profile_device_id(state, cfg)
+
+        def _reconnect_connect_info():
+            """Refresh SCG endpoint after maintenance / VM mass-off (forever)."""
+            # Prefer a possibly refreshed firmAuth from state (token soft-refresh
+            # may have updated scAuthCode between rounds).
+            try:
+                fresh_auth = core.get_firm_auth(args)
+                code = product_router.extract_sc_auth_code(fresh_auth) or sc_auth_code
+            except Exception:
+                code = sc_auth_code
+            info = scg_route.get_connect_info(code, vm_id, device_id=device_id)
+            return {
+                "scgIp": info.get("scgIp") or info.get("scg_ip") or "",
+                "scgPort": str(info.get("scgPort") or info.get("scg_port") or ""),
+                "scAuthCode": info.get("scAuthCode") or code,
+            }
+
         connect_info = scg_route.get_connect_info(sc_auth_code, vm_id, device_id=device_id)
         scg_ip = connect_info["scgIp"]
         scg_port = connect_info["scgPort"]
         sc_auth_code = connect_info.get("scAuthCode") or sc_auth_code
         report["stage"] = "scg-keepalive"
+        scg_mode = str(getattr(args, "scg_mode", None) or "spice").strip().lower()
+        report["scg_mode"] = scg_mode
+        # Prefer route.userServiceId (set by cmd_product_keepalive from selected
+        # desktop) over raw CLI args — product path often leaves args empty.
+        usid = (
+            str(getattr(route, "userServiceId", "") or "")
+            or str(getattr(args, "user_service_id", "") or "")
+            or str(getattr(report, "get", lambda *_: "")("userServiceId") or "")
+        )
+        if not usid and isinstance(report, dict):
+            usid = str(report.get("userServiceId") or "")
         result = scg_route.run_scg_keepalive(
             scg_ip=scg_ip, scg_port=scg_port, sc_auth_code=sc_auth_code,
             vm_id=vm_id, duration=args.duration, forever=args.forever,
-            user_service_id=str(getattr(args, "user_service_id", "") or ""),
-            state_path=getattr(args, "state", None))
+            user_service_id=usid,
+            state_path=getattr(args, "state", None),
+            mode=scg_mode,
+            reconnect_fn=_reconnect_connect_info if args.forever else None,
+        )
     except Exception as exc:  # noqa: BLE001 - surface CEM/TCP/TLS/protocol failure
-        report["error"] = "%s: %s" % (type(exc).__name__, exc)
-        report["nextStep"] = "inspect CEM getConnectInfo / SCG TCP-TLS protocol"
+        # Soft-tag: platform maintenance / CEM blip must not look like hard crash.
+        tags = {}
+        try:
+            tags = scg_route.classify_scg_soft_failure(exc)
+        except Exception:
+            tags = {
+                "error": "%s: %s" % (type(exc).__name__, exc),
+                "recoverable": True,
+                "platform_maintenance": False,
+                "fail_reason": "scg_exception",
+            }
+        report["error"] = str(tags.get("error") or ("%s: %s" % (type(exc).__name__, exc)))
+        report["ok"] = False
+        report["recoverable"] = bool(tags.get("recoverable", True))
+        report["platform_maintenance"] = bool(tags.get("platform_maintenance", False))
+        report["fail_reason"] = str(tags.get("fail_reason") or "scg_exception")
+        report["spice_ok"] = False
+        if report.get("platform_maintenance"):
+            report["nextStep"] = (
+                "platform maintenance / VM mass-off suspected; "
+                "retry getConnectInfo after backoff (forever outer loop continues)"
+            )
+        else:
+            report["nextStep"] = "inspect CEM getConnectInfo / SCG TCP-TLS protocol"
         report["duration"] = round(time.monotonic() - started, 3)
         _emit_product_report(args, report)
         return report
 
+    # Extract last-round SCG stats for product-level success criteria.
+    # spice_ok=False means MAIN_INIT never arrived; returncode alone is false-positive.
+    last = {}
+    inner_stats = {}
+    try:
+        stats_obj = result.stats if isinstance(getattr(result, "stats", None), dict) else {}
+        last = stats_obj.get("last") if isinstance(stats_obj.get("last"), dict) else {}
+        inner_stats = last.get("stats") if isinstance(last.get("stats"), dict) else {}
+    except Exception:
+        last, inner_stats = {}, {}
+
+    spice_ok = bool(last.get("spice_ok"))
+    channels = list(last.get("connected_channels") or [])
+    soho_code = None
+    try:
+        if inner_stats.get("soho_heartbeat_code") is not None:
+            soho_code = int(inner_stats.get("soho_heartbeat_code") or 0)
+    except Exception:
+        soho_code = None
+    lock_codes = {4039, 4040, 4041, 4042}
+    desktop_lock_hint = bool(soho_code in lock_codes) if soho_code is not None else False
+
+    tls_hold_ok = bool(last.get("tls_hold_ok"))
+    keepalive_mode = str(last.get("keepalive_mode") or getattr(args, "scg_mode", None) or "spice")
+    report["spice_ok"] = spice_ok
+    report["tls_hold_ok"] = tls_hold_ok
+    report["keepalive_mode"] = keepalive_mode
+    report["connected_channels"] = channels
+    report["soho_heartbeat_code"] = soho_code
+    report["desktop_lock_hint"] = desktop_lock_hint
+    report["scg_stats"] = inner_stats
+    report["scg_progress"] = last.get("progress") or {}
+    report["scg_rounds"] = (result.stats or {}).get("rounds") if isinstance(getattr(result, "stats", None), dict) else None
+    report["degraded"] = bool(last.get("degraded")) if "degraded" in last else (not spice_ok)
+    report["fail_reason"] = last.get("fail_reason") or ""
+
+    # Fail-closed honesty on product report fields (I-PHASE-I-FLAGS).
+    if keepalive_mode == "tls_hold":
+        report["spice_ok"] = False
+        report["degraded"] = True
+        report["keepalive_mode"] = "tls_hold"
+        if not report.get("fail_reason"):
+            report["fail_reason"] = "tls_hold_mode_spice_skipped"
+    elif report.get("spice_ok") and str(report.get("keepalive_mode") or "").lower() == "tls_hold":
+        report["spice_ok"] = False
+        report["degraded"] = True
+    # Invariant: never (tls_hold and spice_ok)
+    assert not (
+        str(report.get("keepalive_mode") or "").lower() == "tls_hold" and report.get("spice_ok")
+    ), "honesty invariant violated: tls_hold with spice_ok=True"
+
+    # D3/P06/P07: surface KPI VM plane (fail-closed; not business proof alone)
+    report["vm_running"] = last.get("vm_powered_throughout")  # may be None
+    report["vm_running_throughout"] = last.get("vm_powered_throughout")
+    if report["vm_running_throughout"] is None:
+        report["vm_running_throughout"] = last.get("vm_running_throughout")
+    report["vm_sample_count"] = last.get("vm_sample_count") or 0
+    report["wall_hold_seconds"] = last.get("wall_hold_seconds")
+    if report["vm_running"] is None and isinstance(inner_stats, dict):
+        report["vm_running"] = inner_stats.get("vm_powered_throughout")
+        if report["vm_running"] is None:
+            report["vm_running"] = inner_stats.get("vm_running_throughout")
+        if not report["vm_sample_count"]:
+            report["vm_sample_count"] = inner_stats.get("vm_sample_count") or 0
+        if report["wall_hold_seconds"] is None:
+            report["wall_hold_seconds"] = inner_stats.get("wall_hold_seconds")
+    if report.get("vm_running_throughout") is None:
+        report["vm_running_throughout"] = report.get("vm_running")
+
     if args.forever:
-        # Pure-Python SCG keeps looping in-process for --forever; this branch is kept for compatibility.
-        report["ok"] = True
+        # Forever: never claim product PASS. Honesty flags still apply.
+        # ok remains False until a finite run completes with mode-correct success.
+        report["ok"] = False
         report["stage"] = "scg-keepalive-running"
-        report["nextStep"] = "SCG keepalive running; terminate to stop"
+        report["degraded"] = bool(report.get("degraded")) or (keepalive_mode == "tls_hold") or (not spice_ok)
+        if keepalive_mode == "tls_hold":
+            report["spice_ok"] = False
+            report["degraded"] = True
+            report["fail_reason"] = report.get("fail_reason") or "tls_hold_mode_spice_skipped"
+        report["nextStep"] = (
+            "SCG keepalive running (forever); report.ok stays False until finite exit; terminate to stop"
+        )
     else:
-        ok = (result.returncode == 0)
+        scg_mode = str(getattr(args, "scg_mode", None) or keepalive_mode or "spice").strip().lower()
+        if scg_mode == "tls_hold":
+            # Explicit degradation path: success = Auth+TLS held full duration (no SPICE claim).
+            ok = (result.returncode == 0) and tls_hold_ok
+        else:
+            # Strict spice mode (default): require process success AND MAIN_INIT session.
+            ok = (result.returncode == 0) and spice_ok
         report["ok"] = ok
         report["stage"] = "scg-keepalive-done" if ok else "scg-keepalive-failed"
         _stderr = result.stderr
         if isinstance(_stderr, bytes):
             _stderr = _stderr.decode("utf-8", "replace")
-        report["error"] = "" if ok else (_stderr.strip() or "SCG Python route exited %d" % result.returncode)
-        report["nextStep"] = "" if ok else "inspect SCG Python stderr / CEM GetConnectInfo"
+        if ok:
+            report["error"] = ""
+            if scg_mode == "tls_hold":
+                report["nextStep"] = (
+                    "tls_hold succeeded (Auth+TLS held); spice_ok remains False by design; "
+                    "use --scg-mode spice when full SPICE session is required"
+                )
+            else:
+                report["nextStep"] = ""
+        else:
+            if result.returncode != 0:
+                report["error"] = (_stderr.strip() or "SCG Python route exited %d" % result.returncode)
+                report["nextStep"] = "inspect SCG Python stderr / CEM GetConnectInfo"
+            elif scg_mode == "tls_hold":
+                report["error"] = (
+                    "SCG tls_hold failed; returncode=%s tls_hold_ok=%s soho=%s"
+                    % (result.returncode, tls_hold_ok, soho_code)
+                )
+                report["nextStep"] = "inspect TLS hold / soho heartbeat / network path to SCG"
+            else:
+                report["error"] = (
+                    "SCG spice_ok=False (MAIN_INIT missing); returncode=%s channels=%s soho=%s lock_hint=%s"
+                    % (result.returncode, channels, soho_code, desktop_lock_hint)
+                )
+                report["nextStep"] = (
+                    "SPICE-over-trunk handshake failed; see golden TLS+local SPICE topology "
+                    "or enable --scg-mode tls_hold if only TCP/TLS hold is required"
+                )
+
+    # D3: business_ok after mode ok (fail-closed; tls_hold never true)
+    report["business_ok"] = compute_business_ok(report, forever=bool(getattr(args, "forever", False)))
+    assert not (
+        report.get("business_ok")
+        and str(report.get("keepalive_mode") or "").lower() == "tls_hold"
+    ), "D3 invariant: business_ok must never be True under tls_hold"
+
     report["duration"] = round(time.monotonic() - started, 3)
     _emit_product_report(args, report)
     return report
@@ -1319,6 +1586,12 @@ def cmd_product_keepalive(args):
     route, dispatch to the matching keepalive backend. Emits a redacted report
     (route/stage/ok/duration/error/nextStep); never prints raw credentials.
     """
+    # I-E-P1-MODULE-GUARD: hard product pin before firmAuth/LIVE route
+    product_pin.enforce_product_pin(
+        getattr(args, "user_service_id", None),
+        tag="PRODUCT-PIN",
+    )
+
     import time
     started = time.monotonic()
     report = _product_keepalive_report()
@@ -2065,6 +2338,12 @@ def build_parser():
     ip.set_defaults(func=cmd_interactive)
     p.add_argument("--duration", type=int, default=None, help="hold each SCG Python keepalive round N seconds (default 60)")
     p.add_argument("--forever", action="store_true", help="repeat the SCG Python keepalive loop until interrupted")
+    p.add_argument(
+        "--scg-mode",
+        choices=("spice", "tls_hold"),
+        default="spice",
+        help="SCG keepalive mode: spice (full trunk SPICE, default) or tls_hold (Auth+TLS hold + soho; no SPICE claim)",
+    )
     p.add_argument("--user-service-id", default=None, help="override the selected user service id")
     p.add_argument("--vm-id", default=None, help="override the target desktop vmId")
     p.set_defaults(func=cmd_product_keepalive)

@@ -19,6 +19,8 @@ CHUANYUN_VERSION = 0x01
 class SpiceChannel:
     MAIN = 1
     DISPLAY = 2
+    INPUTS = 3
+    CURSOR = 4
 
 
 class SpiceMessage:

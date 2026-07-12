@@ -40,3 +40,13 @@ notes/
 progress/
 hive_t6/
 longtest_runner.py
+reports/
+hive_scg_keepalive/
+plan_scg_protocol/
+*.bak
+*.bak_*
+scripts/e_*.py
+scripts/f_*.py
+scripts/f60_*.py
+scripts/*_harvest_*.py
+scripts/e1_*.sh
