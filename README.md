@@ -127,6 +127,26 @@ login
 
 如果当前云电脑没有开机，程序首次检测时会自动开机一次；后续循环只做保活和状态检测，不会反复开机。
 
+### 官方维护 / 批量关机时进程会不会挂？
+
+- **交互连续保活**：每轮异常会被外层循环吞掉并进入下一轮，进程不因单轮 CEM/维护错误退出。
+- **CLI `--forever`**：SCG 路径启用 `reconnect_fn` 软恢复——遇到 CEM 502 / 连接被维护打断时，会重新拉 connect-info 并续连，而不是直接崩掉。
+- 单轮冒烟（`--duration` 有限、非 forever）仅用于验证能否连通，不保证维护窗口内自动续命。
+
+### 产品锁定（可选，默认关闭）
+
+公开使用**不需要**任何产品 ID。只有开发者验收 / LIVE  harness 需要把会话钉在指定云电脑时：
+
+```bash
+export CMCC_ENFORCE_PIN=1
+export CMCC_PRODUCT_USID=<你的 userServiceId>
+export CMCC_PRODUCT_VMID=<你的 vmId>
+# 可选
+export CMCC_PRODUCT_SPU=<spuCode>
+```
+
+未设置 `CMCC_ENFORCE_PIN` 时，交互菜单选中的任意云电脑都可以保活。
+
 ## 以后每天怎么启动？
 
 第一次安装完成后，以后不需要重复安装依赖。

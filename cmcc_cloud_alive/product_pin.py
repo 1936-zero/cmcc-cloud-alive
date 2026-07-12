@@ -1,31 +1,91 @@
-"""Product pin lock for LIVE product paths (I-E-PIN-GATE / I-E-P1-MODULE-GUARD).
+"""Optional product pin lock for LIVE product paths (I-E-PIN-GATE).
 
-Hard-assert selected product identity before any product-keepalive / LIVE spawn:
-  usid=38654967  vmId=1230486  spu=sc-cloud-pc
-  FORBIDDEN: usid=2663816 / spu=zte-cloud-pc
-  refuse RC=4 on mismatch (fail-closed).
+Default: pin enforcement is **OFF**. Public / third-party clones work with any
+cloud-PC selection from the interactive menu.
+
+Enable only for developer acceptance / LIVE harness:
+
+  export CMCC_ENFORCE_PIN=1
+  export CMCC_PRODUCT_USID=<your-usid>
+  export CMCC_PRODUCT_VMID=<your-vmid>
+  export CMCC_PRODUCT_SPU=sc-cloud-pc   # optional; default sc-cloud-pc when pin on
+
+Optional forbidden SKU block (dev only; empty = no forbidden list):
+
+  export CMCC_FORBIDDEN_USID=
+  export CMCC_FORBIDDEN_SPU=zte-cloud-pc
 
 Shared by:
   - cmcc_cloud_alive.main cmd_product_keepalive (module path)
   - scripts/e_shorttest_runner.py (harness path)
 
-Never logs secrets.
+Never logs secrets. Never ships hard-coded personal product IDs.
 """
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
 from . import core
 
-PRODUCT_USID = "38654967"
-PRODUCT_VMID = "1230486"
-PRODUCT_SPU = "sc-cloud-pc"
-FORBIDDEN_USID = "2663816"
-FORBIDDEN_SPU = "zte-cloud-pc"
 PIN_REFUSE_RC = 4
+
+# Defaults for public tree: empty pin triad => enforcement inactive unless
+# CMCC_ENFORCE_PIN=1 *and* at least USID is configured.
+_DEFAULT_SPU = "sc-cloud-pc"
+
+
+def _env(name: str, default: str = "") -> str:
+    return str(os.environ.get(name, default) or "").strip()
+
+
+def pin_enforced() -> bool:
+    """True only when CMCC_ENFORCE_PIN is truthy (1/true/yes/on)."""
+    return _env("CMCC_ENFORCE_PIN").lower() in ("1", "true", "yes", "on")
+
+
+def _load_pin_config() -> dict[str, str]:
+    """Resolve pin values from env. Empty strings mean 'not configured'."""
+    return {
+        "usid": _env("CMCC_PRODUCT_USID"),
+        "vmid": _env("CMCC_PRODUCT_VMID"),
+        "spu": _env("CMCC_PRODUCT_SPU") or (_DEFAULT_SPU if pin_enforced() else ""),
+        "forbidden_usid": _env("CMCC_FORBIDDEN_USID"),
+        "forbidden_spu": _env("CMCC_FORBIDDEN_SPU"),
+    }
+
+
+def _pin_configured(cfg: dict[str, str] | None = None) -> bool:
+    cfg = cfg or _load_pin_config()
+    # Require at least USID to treat pin as configured when enforcement is on.
+    return bool(cfg.get("usid"))
+
+
+# Module-level attributes kept for backward-compatible imports in tests/callers.
+# Values are re-read from env on each access via property-like helpers below;
+# these snapshots are refreshed by refresh_pin_constants().
+PRODUCT_USID = ""
+PRODUCT_VMID = ""
+PRODUCT_SPU = ""
+FORBIDDEN_USID = ""
+FORBIDDEN_SPU = ""
+
+
+def refresh_pin_constants() -> None:
+    """Refresh module-level PRODUCT_* / FORBIDDEN_* from current env."""
+    global PRODUCT_USID, PRODUCT_VMID, PRODUCT_SPU, FORBIDDEN_USID, FORBIDDEN_SPU
+    cfg = _load_pin_config()
+    PRODUCT_USID = cfg["usid"]
+    PRODUCT_VMID = cfg["vmid"]
+    PRODUCT_SPU = cfg["spu"]
+    FORBIDDEN_USID = cfg["forbidden_usid"]
+    FORBIDDEN_SPU = cfg["forbidden_spu"]
+
+
+refresh_pin_constants()
 
 
 def default_state_path() -> Path:
@@ -70,23 +130,48 @@ def assert_product_pin(
     cli_usid: str | None = None,
     state_file: Path | None = None,
 ) -> tuple[bool, str, dict]:
-    """Return (ok, reason, fields). Fail-closed on missing/mismatch/forbidden SKU.
+    """Return (ok, reason, fields).
 
-    Checks:
-      - selectedUserServiceId == 38654967
-      - lastSpuCode / desk spu == sc-cloud-pc (when present; missing fails)
-      - lastVmId == 1230486 (missing fails)
-      - FORBIDDEN: 2663816 / zte-cloud-pc
-      - CLI --user-service-id must match PRODUCT_USID when provided
+    When pin is not enforced (default public mode), always returns ok=True
+    with reason 'pin disabled' — any cloud-PC may be selected.
+
+    When CMCC_ENFORCE_PIN=1 and CMCC_PRODUCT_USID is set, fail-closed on
+    missing/mismatch/forbidden SKU against env-configured expected values.
     Never logs secrets.
     """
+    refresh_pin_constants()
+    cfg = _load_pin_config()
     fields = load_state_product_fields(state_file)
+    fields["pin_enforced"] = pin_enforced()
+    fields["expected"] = {
+        "usid": cfg["usid"] or None,
+        "vmId": cfg["vmid"] or None,
+        "spu": cfg["spu"] or None,
+    }
+
+    if not pin_enforced():
+        return True, "pin disabled (CMCC_ENFORCE_PIN not set)", fields
+
+    if not _pin_configured(cfg):
+        # Enforcement requested but no expected USID — refuse to avoid silent
+        # "always match empty" behaviour; operator must set CMCC_PRODUCT_USID.
+        return (
+            False,
+            "CMCC_ENFORCE_PIN=1 but CMCC_PRODUCT_USID is empty",
+            fields,
+        )
+
     reasons: list[str] = []
+    product_usid = cfg["usid"]
+    product_vmid = cfg["vmid"]
+    product_spu = cfg["spu"]
+    forbidden_usid = cfg["forbidden_usid"]
+    forbidden_spu = cfg["forbidden_spu"]
 
     if cli_usid is not None and str(cli_usid).strip() != "":
-        if str(cli_usid).strip() != PRODUCT_USID:
+        if str(cli_usid).strip() != product_usid:
             reasons.append(
-                f"cli --user-service-id={cli_usid!r} != PRODUCT_USID={PRODUCT_USID}"
+                f"cli --user-service-id={cli_usid!r} != PRODUCT_USID={product_usid}"
             )
 
     if not fields.get("state_exists"):
@@ -98,34 +183,31 @@ def assert_product_pin(
         return False, "; ".join(reasons), fields
 
     usid = fields.get("selectedUserServiceId")
-    spu = fields.get("lastSpuCode")
-    vmid = fields.get("lastVmId")
     desk_usid = fields.get("desk_usid")
-    desk_spu = fields.get("desk_spu")
+    vmid = fields.get("lastVmId")
+    spu = fields.get("lastSpuCode") or fields.get("desk_spu")
 
-    if usid == FORBIDDEN_USID or desk_usid == FORBIDDEN_USID:
-        reasons.append(f"FORBIDDEN usid={FORBIDDEN_USID} (non-product SKU)")
-    if spu == FORBIDDEN_SPU or desk_spu == FORBIDDEN_SPU:
-        reasons.append(f"FORBIDDEN spu={FORBIDDEN_SPU}")
+    if forbidden_usid and (usid == forbidden_usid or desk_usid == forbidden_usid):
+        reasons.append(f"FORBIDDEN usid={forbidden_usid} (non-product SKU)")
+    if forbidden_spu and (spu == forbidden_spu or fields.get("desk_spu") == forbidden_spu):
+        reasons.append(f"FORBIDDEN spu={forbidden_spu}")
 
-    if usid != PRODUCT_USID:
-        reasons.append(f"selectedUserServiceId={usid!r} != {PRODUCT_USID}")
-    if desk_usid is not None and desk_usid != PRODUCT_USID:
-        reasons.append(f"selectedDesktop.userServiceId={desk_usid!r} != {PRODUCT_USID}")
+    if usid != product_usid:
+        reasons.append(f"selectedUserServiceId={usid!r} != {product_usid}")
+    if desk_usid is not None and desk_usid != product_usid:
+        reasons.append(f"selectedDesktop.userServiceId={desk_usid!r} != {product_usid}")
 
-    # spu hard when present
-    if spu is not None and spu != PRODUCT_SPU:
-        reasons.append(f"lastSpuCode={spu!r} != {PRODUCT_SPU}")
-    if desk_spu is not None and desk_spu != PRODUCT_SPU:
-        reasons.append(f"selectedDesktop.spuCode={desk_spu!r} != {PRODUCT_SPU}")
-    if spu is None and desk_spu is None:
-        reasons.append("spu missing (need sc-cloud-pc)")
+    if product_spu:
+        if spu is None:
+            reasons.append(f"lastSpuCode/desk spu missing (need {product_spu})")
+        elif spu != product_spu:
+            reasons.append(f"spu={spu!r} != {product_spu}")
 
-    # vm: fail if present and wrong; if missing, fail-closed for LIVE pin gate
-    if vmid is None:
-        reasons.append("lastVmId missing (need 1230486)")
-    elif vmid != PRODUCT_VMID:
-        reasons.append(f"lastVmId={vmid!r} != {PRODUCT_VMID}")
+    if product_vmid:
+        if vmid is None:
+            reasons.append(f"lastVmId missing (need {product_vmid})")
+        elif vmid != product_vmid:
+            reasons.append(f"lastVmId={vmid!r} != {product_vmid}")
 
     if reasons:
         return False, "; ".join(reasons), fields
@@ -139,6 +221,7 @@ def refuse_pin(
     tag: str = "PRODUCT-PIN",
 ) -> int:
     """Print redacted refuse lines and return PIN_REFUSE_RC (does not exit)."""
+    refresh_pin_constants()
     print(f"[{tag}] REFUSE LIVE: product pin mismatch — {reason}", file=sys.stderr)
     safe = {
         "selectedUserServiceId": (fields or {}).get("selectedUserServiceId"),
@@ -146,11 +229,22 @@ def refuse_pin(
         "lastSpuCode": (fields or {}).get("lastSpuCode"),
         "desk_usid": (fields or {}).get("desk_usid"),
         "desk_spu": (fields or {}).get("desk_spu"),
-        "expected": {"usid": PRODUCT_USID, "vmId": PRODUCT_VMID, "spu": PRODUCT_SPU},
-        "forbidden": {"usid": FORBIDDEN_USID, "spu": FORBIDDEN_SPU},
+        "expected": {
+            "usid": PRODUCT_USID or None,
+            "vmId": PRODUCT_VMID or None,
+            "spu": PRODUCT_SPU or None,
+        },
+        "forbidden": {
+            "usid": FORBIDDEN_USID or None,
+            "spu": FORBIDDEN_SPU or None,
+        },
+        "pin_enforced": pin_enforced(),
     }
     print(f"[{tag}] pin_fields: {json.dumps(safe, ensure_ascii=False)}")
-    print(f"[{tag}] runbook: reports/I_E_PIN_GATE.md + reports/I_E_P1_MODULE_GUARD.md")
+    print(
+        f"[{tag}] hint: pin is optional; unset CMCC_ENFORCE_PIN for public use, "
+        "or set CMCC_PRODUCT_USID/VMID/SPU to your own product"
+    )
     return PIN_REFUSE_RC
 
 
@@ -160,9 +254,9 @@ def enforce_product_pin(
     *,
     tag: str = "PRODUCT-PIN",
 ) -> dict:
-    """Assert pin; on failure print refuse and raise SystemExit(PIN_REFUSE_RC).
+    """Assert pin when enforced; on failure print refuse and SystemExit(RC=4).
 
-    Returns pin fields when ok.
+    When pin is disabled (default), returns state fields without exiting.
     """
     ok, reason, fields = assert_product_pin(cli_usid, state_file=state_file)
     if not ok:

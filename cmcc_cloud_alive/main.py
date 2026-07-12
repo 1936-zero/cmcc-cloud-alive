@@ -1228,25 +1228,36 @@ def _report_product_pin_fields(report):
 
 
 def _product_pin_matches(report):
-    """T17/R7: fail-closed product-id gate for business_ok.
+    """T17/R7: product-id gate for business_ok (env-driven, default OFF).
 
-    - all three pin fields missing => False (cannot prove correct product)
-    - any present field must equal product_pin.PRODUCT_*
-    - mismatch => False
-    Pure function on report dict; no I/O / no LIVE.
+    Public mode (CMCC_ENFORCE_PIN unset): always True — any selected product OK.
+    Enforced mode: fail-closed against CMCC_PRODUCT_USID/VMID/SPU from env.
+    Pure function on report dict (+ env); no I/O / no LIVE.
     """
+    product_pin.refresh_pin_constants()
+    if not product_pin.pin_enforced():
+        return True
+    expected_usid = product_pin.PRODUCT_USID
+    expected_vmid = product_pin.PRODUCT_VMID
+    expected_spu = product_pin.PRODUCT_SPU
+    # Enforcement on but no expected USID configured → cannot prove product.
+    if not expected_usid:
+        return False
     usid, vmid, spu = _report_product_pin_fields(report)
     if usid is None and vmid is None and spu is None:
         return False
-    if usid is not None and usid != product_pin.PRODUCT_USID:
+    if usid is not None and usid != expected_usid:
         return False
-    if vmid is not None and vmid != product_pin.PRODUCT_VMID:
+    if expected_vmid and vmid is not None and vmid != expected_vmid:
         return False
-    if spu is not None and spu != product_pin.PRODUCT_SPU:
+    if expected_spu and spu is not None and spu != expected_spu:
         return False
-    # At least one field present and all present fields match; require full triad
-    # for business plane (fail-closed residual R7).
-    if usid is None or vmid is None or spu is None:
+    # Require full triad when all expected fields are configured.
+    if usid is None:
+        return False
+    if expected_vmid and vmid is None:
+        return False
+    if expected_spu and spu is None:
         return False
     return True
 
