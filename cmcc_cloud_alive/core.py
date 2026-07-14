@@ -888,13 +888,19 @@ def password_login(args):
         if account_type == ACCOUNT_TYPE_SUB
         else "/login/namePwdLogin/v1"
     )
+    # The two endpoints use different account-name fields.  The sub-account
+    # endpoint does not treat ``username`` as an alias and returns code 6005
+    # (子账号不能为空) when ``subAccount`` is absent.
+    account_field = (
+        "subAccount" if account_type == ACCOUNT_TYPE_SUB else "username"
+    )
     login_state = dict(load_state(args))
     # A credential login is a new session.  The official request leaves these
     # headers empty; do not leak a previous/expired identity into the login.
     login_state["sohoToken"] = ""
     login_state["userId"] = ""
     response = api_request(login_path, {
-        "username": args.username,
+        account_field: args.username,
         "password": encrypted_password,
         "verificationCode": args.verification_code or "",
         "randomCode": args.random_code or "",
