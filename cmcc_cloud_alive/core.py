@@ -859,8 +859,40 @@ def password_login(args):
         "username": user.get("username") or args.username,
         "isLogined": True,
         "isSubAccount": False,
+        "loginMode": "password",
     }, args)
     print("login ok")
+
+
+def sub_password_login(args):
+    """Sub-account password login via /login/home/namePwdLogin/v1.
+
+    Mirrors Go soho.SubAccountPasswordLogin: same RSA password encryption as the
+    main-account path, but the account field is ``subAccount`` and the path is
+    under ``/login/home/``.
+    """
+    ensure_public_key(args)
+    pub = assert_ok(api_request("/login/publicKey/v1", {"type": 1}, args), "loginPublicKey")["data"]
+    encrypted_password = rsa_encrypt_string(args.password, pub)
+    response = api_request("/login/home/namePwdLogin/v1", {
+        "subAccount": args.username,
+        "password": encrypted_password,
+        "verificationCode": getattr(args, "verification_code", None) or "",
+        "randomCode": getattr(args, "random_code", None) or "",
+    }, args)
+    assert_ok(response, "subPasswordLogin")
+    user = response.get("data") or {}
+    merge_state({
+        "userId": user.get("userId"),
+        "nickname": user.get("nickname") or "",
+        "phone": user.get("phone") or "",
+        "sohoToken": user.get("sohoToken"),
+        "username": user.get("username") or user.get("subAccount") or args.username,
+        "isLogined": True,
+        "isSubAccount": True,
+        "loginMode": "sub_password",
+    }, args)
+    print("sub-account login ok")
 
 
 def protocol_check(args):

@@ -1,3 +1,5 @@
+/* HARD_GATE#845 CARD_H_LOG_CLEAR_GLOBAL */
+/* HARD_GATE#834 PAIN_FIX_BATCH */
 /* CMCC Alive WebUI — multi-account console */
 (function () {
   "use strict";
@@ -21,6 +23,7 @@
     logModalPid: null,
     logModalReturnFocus: null,
     composer: {
+      /* HARD_GATE#871c: composer 初始占位；卡片以用户/档案选择为准，禁止全局强制 */
       protocol: "ZTE",
       clientProfile: "linux",
       mode: "live",
@@ -28,6 +31,8 @@
       desktopLabel: "",
       profileId: "",
     },
+    /* HARD_GATE#871: 从日志/桌面列表缓存的云桌面状态文案 */
+    desktopStatusByPid: Object.create(null),
   };
 
   function $(sel, root) {
@@ -94,6 +99,9 @@
       LIVE_DISABLED: "当前环境未开启长期保活，请改用「单轮」或联系管理员",
       LOGIN_FAILED: "登录失败，请检查账号密码",
       AUTH_FAILED: "账号或密码错误",
+      AUTH_EXPIRED: "登录会话失效，请重新登录",
+      HTTP_401: "登录失败（401）：账号密码错误或会话失效",
+      401: "登录失败（401）：账号密码错误或会话失效",
       AUTH_REQUIRED: "需要先登录账号",
       LOGIN_REQUIRED: "请先登录账号",
       DESKTOP_REQUIRED: "请先选择云桌面再启动",
@@ -194,9 +202,12 @@
   }
 
   function protocolLabel(v) {
-    const u = String(v || "ZTE").toUpperCase();
-    if (u === "SCG") return "深信服";
-    return "中兴";
+    /* HARD_GATE#871c: label from value; empty → 未选 */
+    const raw = String(v || "").toUpperCase();
+    if (!raw) return "未选";
+    const u = raw;
+    if (u === "ZTE" || u === "ZX" || u === "ZHONGXING") return "中兴";
+    return "深信服";
   }
 
   function clientLabel(v) {
@@ -213,12 +224,22 @@
     return "永久";
   }
 
-  function modeApi(v) {
+  function modeIsOnce(v) {
     const m = String(v || "live").toLowerCase();
-    if (m === "dry-run" || m === "dryrun" || m === "once" || m === "single") {
-      return "dry-run";
+    return m === "dry-run" || m === "dryrun" || m === "once" || m === "single";
+  }
+
+  /* #848: 永久/单轮都走 LIVE 真子进程；单轮用 once，不再映射 dry-run(FakeBackend) */
+  function modeApi(v) {
+    return modeIsOnce(v) ? "once" : "live";
+  }
+
+  function durationForMode(mode, trafficSec) {
+    if (modeIsOnce(mode)) {
+      const t = Number(trafficSec || 60);
+      return t > 0 ? t : 60;
     }
-    return "live";
+    return 0;
   }
 
   function jobOf(p) {
@@ -229,12 +250,23 @@
     return null;
   }
 
+  function resolveUserProtocol() {
+    /* HARD_GATE#871c: user choice only — never force SCG globally */
+    for (var i = 0; i < arguments.length; i++) {
+      var v = arguments[i];
+      if (v == null || v === "") continue;
+      var u = String(v).toUpperCase();
+      if (u === "ZX" || u === "ZHONGXING") u = "ZTE";
+      if (u === "SANGFOR") u = "SCG";
+      if (u === "ZTE" || u === "SCG") return u;
+    }
+    return "ZTE"; /* historical empty-only fallback, not product default force */
+  }
+
   function ensureDraft(pid, p) {
     const job = jobOf(p);
     const protocol =
-      (p && p.protocol) ||
-      (job && job.protocol) ||
-      "ZTE";
+      resolveUserProtocol(p && p.protocol, p && p.lastOfficialProtocol, p && p.protocolHint, job && job.protocol);
     const mode =
       (p && p.mode) ||
       (job && job.mode) ||
@@ -250,7 +282,7 @@
         mode: mode,
         intervalMin: 5,
         trafficSec: 60,
-        durationSec: 0,
+        durationSec: durationForMode(mode, 60),
         userServiceId: (p && p.userServiceId) || "",
         desktopLabel: (p && p.desktopLabel) || "",
         spuCode: (p && (p.spuCode || p.spu_code)) || "",
@@ -276,7 +308,7 @@
       else if (job && job.mode) d.mode = job.mode;
     }
     if (!state.drafts[pid].lastOfficialProtocol) {
-      state.drafts[pid].lastOfficialProtocol = state.drafts[pid].protocol || "ZTE";
+      state.drafts[pid].lastOfficialProtocol = resolveUserProtocol(state.drafts[pid].protocol, state.drafts[pid].lastOfficialProtocol);
     }
     return state.drafts[pid];
   }
@@ -341,77 +373,101 @@
   }
 
   function pushCard(pid, line, at) {
-    // HARD_GATE#784 CARD_LOG_NO_SPAM: incremental append; keep scrollTop; no full panel rebuild
+    // HARD_GATE#854: buffer + immediate paint (SSE must reappear after clear; 6s poll is backup)
     if (!pid || !line) return;
     const arr = state.logs[pid] || (state.logs[pid] = []);
+    try { patchCardDeskStatus(pid); } catch (_e) {}
     const entry = { at: at || new Date().toISOString(), line: String(line) };
     arr.push(entry);
     if (arr.length > 300) state.logs[pid] = arr.slice(-300);
-    const panel = $('[data-log="' + pid + '"]');
-    if (panel) {
-      const stickBottom =
-        panel.scrollHeight - panel.scrollTop - panel.clientHeight < 24;
-      const prevTop = panel.scrollTop;
-      // remove empty/pad fillers before append
-      const empty = panel.querySelector(".log-empty");
-      if (empty) empty.remove();
-      const pads = panel.querySelectorAll(".log-line-pad");
-      for (let i = 0; i < pads.length; i++) pads[i].remove();
-      const raw = formatLogDisplayLine(entry);
-      const level = classifyLogLine(raw);
-      const row = document.createElement("div");
-      row.className = "log-line log-line-py " + level;
-      const span = document.createElement("span");
-      span.className = "log-text";
-      span.textContent = raw;
-      row.appendChild(span);
-      panel.appendChild(row);
-      // card viewport: keep last 6 real lines + pad to 6
-      const real = panel.querySelectorAll(".log-line:not(.log-line-pad)");
-      while (real.length > 6) {
-        real[0].remove();
-        // NodeList is live in some browsers; re-query via length shrink
-        break;
-      }
-      let reals = panel.querySelectorAll(".log-line:not(.log-line-pad)");
-      while (reals.length > 6) {
-        reals[0].remove();
-        reals = panel.querySelectorAll(".log-line:not(.log-line-pad)");
-      }
-      reals = panel.querySelectorAll(".log-line:not(.log-line-pad)");
-      while (reals.length + panel.querySelectorAll(".log-line-pad").length < 6) {
-        const pad = document.createElement("div");
-        pad.className = "log-line log-line-pad";
-        pad.setAttribute("aria-hidden", "true");
-        const ps = document.createElement("span");
-        ps.className = "log-text";
-        ps.innerHTML = "&nbsp;";
-        pad.appendChild(ps);
-        panel.appendChild(pad);
-      }
-      if (stickBottom) panel.scrollTop = panel.scrollHeight;
-      else panel.scrollTop = prevTop;
-    }
-    if (state.logModalPid === pid) {
-      const body = $("#log-full-body") || $("#log-modal-body");
-      if (body) {
-        const stick =
-          body.scrollHeight - body.scrollTop - body.clientHeight < 24;
-        const prev = body.scrollTop;
-        const raw = formatLogDisplayLine(entry);
-        const level = classifyLogLine(raw);
-        const row = document.createElement("div");
-        row.className = "log-line log-line-py " + level;
-        const span = document.createElement("span");
-        span.className = "log-text";
-        span.textContent = raw;
-        row.appendChild(span);
-        body.appendChild(row);
-        if (stick) body.scrollTop = body.scrollHeight;
-        else body.scrollTop = prev;
+    try { patchCardDeskStatus(pid); } catch (_e) {}
+    applyLogsToDom(pid, false);
+  }
+
+  function shanghaiHms(isoOrDate) {
+    /* HARD_GATE#871c: full Asia/Shanghai [YYYY-MM-DD HH:mm:ss] like CLI */
+    try {
+      const d = isoOrDate instanceof Date ? isoOrDate : new Date(isoOrDate || Date.now());
+      if (isNaN(d.getTime())) return "";
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Shanghai",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).formatToParts(d);
+      const get = (t) => (parts.find((p) => p.type === t) || {}).value || "";
+      return get("year") + "-" + get("month") + "-" + get("day") + " " + get("hour") + ":" + get("minute") + ":" + get("second");
+    } catch (e) {
+      try {
+        const d2 = new Date(isoOrDate || Date.now());
+        const t = d2.getTime() + 8 * 3600 * 1000;
+        const x = new Date(t);
+        const y = x.getUTCFullYear();
+        const mo = String(x.getUTCMonth() + 1).padStart(2, "0");
+        const da = String(x.getUTCDate()).padStart(2, "0");
+        const hh = String(x.getUTCHours()).padStart(2, "0");
+        const mm = String(x.getUTCMinutes()).padStart(2, "0");
+        const ss = String(x.getUTCSeconds()).padStart(2, "0");
+        return y + "-" + mo + "-" + da + " " + hh + ":" + mm + ":" + ss;
+      } catch (e2) {
+        return "";
       }
     }
   }
+
+  function extractDesktopStatusFromLogs(pid) {
+    /* HARD_GATE#871: parse "云桌面状态：xxx" from recent log lines */
+    const arr = state.logs[pid] || [];
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const raw = String((arr[i] && (arr[i].line || arr[i].text)) || arr[i] || "");
+      const m = raw.match(/云桌面状态[：:]\s*([^\s\|\[\]，,；;]+(?:\s*[^\s\|\[\]，,；;]+){0,4})/);
+      if (m && m[1]) {
+        const v = m[1].trim();
+        if (v && v !== "—" && v !== "-") {
+          state.desktopStatusByPid[pid] = v;
+          return v;
+        }
+      }
+      if (/开机运行中|运行中|已开机|关机|已关机|休眠|启动中/.test(raw)) {
+        if (/开机运行中/.test(raw)) {
+          state.desktopStatusByPid[pid] = "开机运行中";
+          return "开机运行中";
+        }
+        if (/已关机|关机/.test(raw) && !/开机/.test(raw)) {
+          state.desktopStatusByPid[pid] = "已关机";
+          return "已关机";
+        }
+      }
+    }
+    return state.desktopStatusByPid[pid] || "";
+  }
+
+  function patchCardDeskStatus(pid) {
+    /* HARD_GATE#871_PATCH_LOG_STATUS: never leave em-dash while keepalive running */
+    const card = document.querySelector('.card[data-id="' + pid + '"]');
+    if (!card) return;
+    const el = card.querySelector("[data-desk-status]");
+    if (!el) return;
+    let v = extractDesktopStatusFromLogs(pid);
+    if (!v) {
+      const st = (state.profiles && state.profiles[pid] && state.profiles[pid].status) || "";
+      const job = (state.jobs && state.jobs[pid]) || {};
+      const running = /run|alive|keep|active|ing/i.test(String(st)) ||
+        /run|alive|active/i.test(String(job.status || job.state || ""));
+      const cardRun = card.classList.contains("is-running") || card.getAttribute("data-running") === "1";
+      if (running || cardRun) v = "保活中";
+    }
+    if (!v) return;
+    el.textContent = v;
+    el.setAttribute("title", v);
+    state.desktopStatusByPid = state.desktopStatusByPid || {};
+    state.desktopStatusByPid[pid] = v;
+  }
+
 
   function renderGlobalLog() {
     const box = $("#global-log");
@@ -423,7 +479,7 @@
     }
     box.innerHTML = lines
       .map(function (x) {
-        const t = (x.at || "").slice(11, 19);
+        const t = shanghaiHms(x.at) || shanghaiHms(Date.now()) || "";
         return (
           '<div class="log-line ' +
           esc(x.level || "") +
@@ -498,15 +554,26 @@
 
   function formatLogDisplayLine(x) {
     // Backend product lines already embed [YYYY-MM-DD HH:MM:SS]; keep exact Python style.
-    // For raw/orch lines without stamp, synthesize Shanghai-like local stamp from entry.at.
+    // For raw/orch lines without stamp, synthesize Shanghai wall stamp from entry.at.
+    // HARD_GATE#861: parse ISO/Z/offset via Date so UTC "...Z" shows as Asia/Shanghai.
     const raw = String((x && x.line) || "");
     if (!raw) return "";
     if (/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]/.test(raw)) return raw;
     const at = String((x && x.at) || "");
     let stamp = "";
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(at)) {
-      // ISO → "YYYY-MM-DD HH:MM:SS" (strip Z / ms / offset)
-      stamp = at.slice(0, 19).replace("T", " ");
+      try {
+        const d = new Date(at);
+        if (!isNaN(d.getTime())) {
+          stamp = d.toLocaleString("sv-SE", {
+            timeZone: "Asia/Shanghai",
+            hour12: false,
+          }).replace("T", " ").slice(0, 19);
+        }
+      } catch (e) {
+        stamp = "";
+      }
+      if (!stamp) stamp = at.slice(0, 19).replace("T", " ");
     } else if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(at)) {
       stamp = at.slice(0, 19);
     }
@@ -514,35 +581,44 @@
   }
 
   function profileLogsHtml(pid, opts) {
-    // HARD_GATE#768-C: card last-6 viewport; full history only in log-modal
+    // HARD_GATE#841: card = last 6 complete entries only (no empty slots);
+    // modal (full) keeps entire history. Height follows content.
     opts = opts || {};
     const full = !!opts.full;
     const all = state.logs[pid] || [];
-    const lines = full ? all : all.slice(-6); // last-6
+    const lines = full ? all : all.slice(-6);
     if (!lines.length) {
-      return '<div class="log-empty">暂无日志。启动保活后这里会实时滚动。</div>';
-    }
-    const rows = lines.map(function (x) {
-      const raw = formatLogDisplayLine(x);
-      const level = classifyLogLine(raw);
-      return (
-        '<div class="log-line log-line-py ' +
-        esc(level) +
-        '"><span class="log-text">' +
-        esc(raw) +
-        "</span></div>"
-      );
-    });
-    if (!full) {
-      while (rows.length < 6) {
-        rows.push(
-          '<div class="log-line log-line-pad" aria-hidden="true"><span class="log-text">&nbsp;</span></div>'
-        );
+      if (full) {
+        return '<div class="log-empty log-empty-fill">暂无日志。启动保活后这里会实时滚动。</div>';
       }
+      // HARD_GATE#853: empty placeholder fills fixed viewport (no card shrink)
+      return (
+        '<div class="log-line log-line-py log-line-card log-line-empty log-empty-fill">' +
+        '<span class="log-text">暂无日志。启动保活后这里会实时滚动。</span></div>'
+      );
     }
-    return rows.join("");
+    return lines
+      .map(function (x) {
+        const raw = formatLogDisplayLine(x);
+        const level = classifyLogLine(raw);
+        const rowCls = full
+          ? 'log-line log-line-py log-line-full ' + level
+          : 'log-line log-line-py log-line-card ' + level;
+        const titleAttr = full ? '' : ' title="' + esc(raw) + '"';
+        return (
+          '<div class="' +
+          rowCls +
+          '"' +
+          titleAttr +
+          '><span class="log-text">' +
+          esc(raw) +
+          '</span></div>'
+        );
+      })
+      .join('');
   }
 
+  
   function ensureLogModal() {
     // HARD_GATE#768-C: log-modal alias + CSS shell .log-full-modal / .log-full-dialog
     // HARD_GATE#827: static #log-full-modal must still bind close/backdrop once
@@ -565,21 +641,25 @@
         "</div>";
       document.body.appendChild(el);
     }
+    // HARD_GATE#833: bind close once; also re-hook static close button if recreated
     if (!el.dataset.closeBound) {
       el.dataset.closeBound = "1";
       el.addEventListener("click", function (ev) {
-        if (ev.target === el) closeLogModal();
-      });
-      const closeBtn =
-        el.querySelector("#log-full-close") ||
-        el.querySelector("[data-close-log-modal], .modal-x, .log-full-close");
-      if (closeBtn) {
-        closeBtn.addEventListener("click", function (ev) {
-          ev.preventDefault();
-          ev.stopPropagation();
+        if (ev.target === el || (ev.target && ev.target.getAttribute && ev.target.getAttribute("data-close-log-modal") != null)) {
           closeLogModal();
-        });
-      }
+        }
+      });
+    }
+    const closeBtn =
+      el.querySelector("#log-full-close") ||
+      el.querySelector("[data-close-log-modal], .modal-x, .log-full-close, .btn-log-close");
+    if (closeBtn && closeBtn.dataset.boundClose !== "1") {
+      closeBtn.dataset.boundClose = "1";
+      closeBtn.addEventListener("click", function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        closeLogModal();
+      });
     }
     return el;
   }
@@ -610,12 +690,18 @@
           document.querySelector('.card[data-pid="' + pid + '"] .log-panel') ||
           null;
     el.classList.remove("hidden", "is-hidden");
+    el.classList.add("open", "is-open");
     el.removeAttribute("hidden");
     el.setAttribute("aria-hidden", "false");
     el.style.display = "flex";
+    el.style.visibility = "visible";
+    el.style.opacity = "1";
     el.style.pointerEvents = "auto";
-    document.body.classList.add("log-modal-open");
+    el.style.zIndex = "1200";
+    el.setAttribute("data-pid", String(pid));
+    document.body.classList.add("log-modal-open", "modal-open");
     document.body.style.overflow = "hidden";
+    document.body.style.pointerEvents = "";
     state.logModalPid = pid;
     const closeBtn = el.querySelector("#log-full-close");
     if (closeBtn && typeof closeBtn.focus === "function") {
@@ -626,29 +712,29 @@
   }
 
   function closeLogModal() {
-    // HARD_GATE#827 CARD_LOG_MODAL_CLOSE_BTN: X/backdrop/Esc clean close, no residual mask
+    // HARD_GATE#831 CARD_LOG_MODAL_CLOSE: X/backdrop/Esc clean close, no residual mask
     const el = $("#log-modal") || $("#log-full-modal");
     if (!el) return;
     el.classList.add("hidden", "is-hidden");
+    el.classList.remove("open", "is-open", "show");
     el.setAttribute("hidden", "");
     el.setAttribute("aria-hidden", "true");
     el.style.display = "none";
-    el.style.pointerEvents = "";
-    document.body.classList.remove("log-modal-open");
+    el.style.visibility = "hidden";
+    el.style.opacity = "0";
+    el.style.pointerEvents = "none";
+    el.style.zIndex = "";
+    document.body.classList.remove("log-modal-open", "modal-open");
     document.body.style.overflow = "";
+    document.body.style.pointerEvents = "";
+    el.removeAttribute("data-pid");
     state.logModalPid = null;
-    const back = state.logModalReturnFocus;
-    state.logModalReturnFocus = null;
-    if (back && typeof back.focus === "function") {
-      try {
-        back.focus();
-      } catch (_) {}
-    }
   }
+
 
   function desktopRowText(d) {
     const id = (d && (d.userServiceId || d.id)) || "";
-    const label = (d && (d.desktopLabel || d.name || d.label)) || id || "未命名";
+    const label = (d && (d.desktopLabel || d.skuName || d.sku || d.name || d.label || d.vmName)) || id || "未命名";
     const spu = (d && (d.spuCode || d.spu_code)) || "—";
     return label + " / " + id + " | spuCode：" + spu;
   }
@@ -713,7 +799,7 @@
     for (let i = 0; i < list.length; i++) {
       const d = list[i] || {};
       const id = d.userServiceId || d.id || "";
-      const label = d.desktopLabel || d.name || d.label || id;
+      const label = d.desktopLabel || d.skuName || d.sku || d.name || d.label || d.vmName || id;
       const val = id + "||" + label;
       const checked = id === selected || label === selected;
       const text = desktopRowText(d);
@@ -774,9 +860,42 @@
     const deskShort = deskLabel || usid || "未选桌面";
     const client = p.clientProfile || d.clientProfile || "linux";
     const protocol =
-      d.protocol || (p && p.protocol) || (job && job.protocol) || "ZTE";
+      resolveUserProtocol(d.protocol, p && p.protocol, p && p.lastOfficialProtocol, p && p.protocolHint, job && job.protocol);
     const mode = d.mode || (p && p.mode) || (job && job.mode) || "live";
-    const errLine = String(state.cardMsg[pid] || p.lastError || "").trim();
+    /* HARD_GATE#871: 云桌面状态 = 桌面列表 / job / 日志「云桌面状态：xxx」缓存 */
+    let deskStatus = "—";
+    if (usid) {
+      const dlist = state.desktops[pid] || [];
+      for (let i = 0; i < dlist.length; i++) {
+        const x = dlist[i];
+        const xid = x.userServiceId || x.id || "";
+        if (String(xid) === String(usid)) {
+          deskStatus = desktopStatusText(x);
+          break;
+        }
+      }
+    }
+    if (deskStatus === "—" || !deskStatus) {
+      const jst =
+        (job &&
+          (job.desktopStatus ||
+            job.vmStatusShow ||
+            job.statusText ||
+            job.cloudStatus)) ||
+        "";
+      if (jst) deskStatus = String(jst);
+    }
+    if ((deskStatus === "—" || !deskStatus) && state.desktopStatusByPid[pid]) {
+      deskStatus = String(state.desktopStatusByPid[pid]);
+    }
+    if (deskStatus === "—" || !deskStatus) {
+      const fromLog = extractDesktopStatusFromLogs(pid);
+      if (fromLog) deskStatus = fromLog;
+    }
+    if ((deskStatus === "—" || !deskStatus) && (st === "running" || (job && job.status === "running"))) {
+      deskStatus = "查询中…";
+    }
+    const errLine = String(state.cardMsg[pid] || "").trim();
     const running = st === "running";
 
     return (
@@ -808,7 +927,9 @@
       "</span>" +
       "</header>" +
       '<div class="card-summary">' +
-      "<div>云桌面 id<strong title=\"" +
+      /* HARD_GATE#869: 3×2 left-aligned columns
+         云桌面↔模式 | 用户协议↔间隔 | 客户端↔云桌面状态 */
+      "<div>云桌面<strong title=\"" +
       esc(deskIdText) +
       '">' +
       esc(deskIdText) +
@@ -825,6 +946,11 @@
       "<div>间隔<strong>" +
       esc(String(d.intervalMin || 5)) +
       " 分钟</strong></div>" +
+      "<div>云桌面状态<strong data-desk-status title=\"" +
+      esc(deskStatus) +
+      "\">" +
+      esc(deskStatus) +
+      "</strong></div>" +
       "</div>" +
       '<div class="card-surface">' +
       (errLine
@@ -845,17 +971,18 @@
       '<button type="button" class="btn btn-ghost" data-act="logs" ' +
       (busy ? "disabled" : "") +
       ">刷新日志</button>" +
+      '<button type="button" class="btn btn-ghost" data-act="clear-logs" ' +
+      (busy ? "disabled" : "") +
+      ">清空日志</button>" +
       "</div>" +
       /* HARD_GATE#736: logs-only dual surface; desktop box removed */
       /* HARD_GATE#810: dblclick whole log panel (head+box) → full modal */
       '<div class="card-surface-dual card-surface-log-only">' +
-      '<div class="log-panel surface-log card-log-expanded" data-log="' +
-      esc(pid) +
-      '" title="双击查看完整日志">' +
-      '<div class="log-panel-head"><span>日志（常显最近 6 条，双击查看完整）</span></div>' +
+      '<div class="log-panel surface-log card-log-expanded" title="双击日志查看完整记录">' +
+      '<div class="log-panel-head"><span>日志（常显最近 6 条；双击看全部）</span></div>' +
       '<div class="log-box log-viewport" data-log="' +
       esc(pid) +
-      '">' +
+      '" title="双击查看完整日志">' +
       profileLogsHtml(pid) +
       "</div></div>" +
       "</div>" +
@@ -871,7 +998,7 @@
     const user = p.usernameMasked || "未设置账号";
     const client = p.clientProfile || d.clientProfile || "linux";
     const protocol =
-      d.protocol || (p && p.protocol) || (job && job.protocol) || "ZTE";
+      resolveUserProtocol(d.protocol, p && p.protocol, p && p.lastOfficialProtocol, p && p.protocolHint, job && job.protocol);
     const mode = d.mode || (p && p.mode) || (job && job.mode) || "live";
     const errLine = String(state.cardMsg[pid] || "").trim();
     const usid = d.userServiceId || (p && p.userServiceId) || "";
@@ -882,8 +1009,8 @@
       "";
     return (
       (errLine
-        ? '<p class="card-error" id="config-modal-error">' + esc(errLine) + "</p>"
-        : '<p class="card-error hidden" id="config-modal-error"></p>') +
+        ? '<p class="card-error" id="config-modal-error" role="alert">' + esc(errLine) + "</p>"
+        : "") +
       '<div class="card-fields config-modal-fields">' +
       '<label class="field span-2"><span>显示名</span>' +
       '<input type="text" data-pid="' +
@@ -900,13 +1027,11 @@
       esc(d.username || "") +
       '" /></label>' +
       '<label class="field"><span>密码</span>' +
-      '<input type="text" autocomplete="off" data-pid="' +
+      '<input type="text" autocomplete="new-password" data-pid="' +
       esc(pid) +
       '" data-key="password" placeholder="' +
       (p.hasPassword ? "已保存，不改请留空" : "请输入密码") +
-      '" value="' +
-      esc(d.password || "") +
-      '" /></label>' +
+      '" value="" /></label>' +
       /* HARD_GATE#784 LOGIN_AFTER_PWD: 登录紧贴密码后、云桌面前 */
       '<div class="field span-2 login-after-pwd">' +
       '<button type="button" class="btn btn-secondary btn-login-inline" data-act="login" data-id="' +
@@ -960,15 +1085,15 @@
       '<div class="field"><span>模式</span>' +
       '<div class="seg" role="group" aria-label="保活模式">' +
       '<button type="button" class="seg-btn' +
-      (modeApi(d.mode) === "live" ? " active" : "") +
+      (!modeIsOnce(d.mode) ? " active" : "") +
       '" data-pid="' +
       esc(pid) +
       '" data-key="mode" data-val="live">永久</button>' +
       '<button type="button" class="seg-btn' +
-      (modeApi(d.mode) === "dry-run" ? " active" : "") +
+      (modeIsOnce(d.mode) ? " active" : "") +
       '" data-pid="' +
       esc(pid) +
-      '" data-key="mode" data-val="dry-run">单轮</button>' +
+      '" data-key="mode" data-val="once">单轮</button>' +
       "</div></div>" +
       '<div class="field"><span>用户协议</span>' +
       '<div class="seg" role="group" aria-label="用户协议">' +
@@ -1081,24 +1206,50 @@
     const empty = $("#empty-state");
     if (!root) return;
     renderStats();
-    if (!state.profiles.length) {
+    /* HARD_GATE#851: belt-and-suspenders draft hide */
+    const visible = (state.profiles || []).filter(function (p) {
+      return p && !p.draft && p.draft !== true && p.draft !== 1 && p.draft !== "1";
+    });
+    if (!visible.length) {
       root.innerHTML = "";
       if (empty) empty.hidden = false;
       return;
     }
     if (empty) empty.hidden = true;
-    root.innerHTML = state.profiles.map(cardHtml).join("");
-    // 卡面日志常显：折叠态也拉近 6 条
-        state.profiles.forEach(function (p) {
+    root.innerHTML = visible.map(cardHtml).join("");
+    // HARD_GATE#838: after rebuild, pin each card log to latest 6
+    state.profiles.forEach(function (p) {
       if (!p || !p.id) return;
+      const panel =
+        $('.log-viewport[data-log="' + p.id + '"]') ||
+        $('.log-box[data-log="' + p.id + '"]');
+      if (panel) panel.scrollTop = panel.scrollHeight;
       if (!state.logs[p.id] || !state.logs[p.id].length) {
         loadLogs(p.id).catch(function () {});
+      } else {
+        applyLogsToDom(p.id, true);
       }
     });
     refreshConfigModal();
   }
 
-  function setComposerMsg(text, kind) {
+  
+  function setConfigError(pid, msg) {
+    const text = String(msg || "").trim();
+    if (text) state.cardMsg[pid] = text;
+    else delete state.cardMsg[pid];
+    const el = document.getElementById("config-modal-error");
+    if (!el) return;
+    if (!text) {
+      el.remove();
+      return;
+    }
+    el.classList.remove("hidden");
+    el.textContent = text;
+    el.setAttribute("role", "alert");
+  }
+
+function setComposerMsg(text, kind) {
     const el = $("#composer-msg");
     if (!el) return;
     el.textContent = text || "";
@@ -1111,13 +1262,16 @@
       displayName: ($("#c-displayName") && $("#c-displayName").value.trim()) || "",
       username: ($("#c-username") && $("#c-username").value.trim()) || "",
       password: ($("#c-password") && $("#c-password").value) || "",
-      protocol: state.composer.protocol || "ZTE",
+      protocol: resolveUserProtocol(state.composer.protocol, state.composer.lastOfficialProtocol),
       clientProfile: state.composer.clientProfile || "linux",
       mode: modeApi(state.composer.mode || "live"),
       intervalMin: Number(($("#c-intervalMin") && $("#c-intervalMin").value) || 5),
       trafficSec: Number(($("#c-trafficSec") && $("#c-trafficSec").value) || 60),
-      /* HARD_GATE#729: no duration UI; permanent/single via mode only */
-      durationSec: 0,
+      /* #848: once -> trafficSec; live forever -> 0 */
+      durationSec: durationForMode(
+        state.composer.mode || "live",
+        Number(($("#c-trafficSec") && $("#c-trafficSec").value) || 60)
+      ),
       userServiceId:
         state.composer.userServiceId ||
         ($("#c-userServiceId") && $("#c-userServiceId").value) ||
@@ -1139,11 +1293,8 @@
     if ($("#c-userServiceId")) $("#c-userServiceId").value = "";
     if ($("#c-desktopLabel")) $("#c-desktopLabel").value = "";
     if ($("#c-desktop")) {
-      /* HARD_GATE#747: obvious CTA button, not gray hint text */
-      $("#c-desktop").innerHTML =
-        '<div class="desk-seg is-empty desk-seg-refresh" role="group" aria-label="云桌面刷新">' +
-        deskRefreshCtaHtml("", true, !!(state.composer.profileId && state.busy[state.composer.profileId])) +
-        "</div>";
+      /* HARD_GATE#842: empty table state */
+      $("#c-desktop").innerHTML = composerDeskEmptyHtml();
       $("#c-desktop").classList.add("is-locked");
       $("#c-desktop").setAttribute("aria-disabled", "true");
     }
@@ -1192,7 +1343,10 @@
     try {
       await loadJobs();
       const data = await api("/api/profiles");
-      state.profiles = (data && data.profiles) || [];
+      /* HARD_GATE#851: never show draft profiles on timeline */
+      state.profiles = ((data && data.profiles) || []).filter(function (p) {
+        return p && !p.draft && p.draft !== true && p.draft !== 1 && p.draft !== "1";
+      });
       for (let i = 0; i < state.profiles.length; i++) {
         ensureDraft(state.profiles[i].id, state.profiles[i]);
       }
@@ -1207,47 +1361,97 @@
   }
 
   async function loadLogs(pid, toastOk) {
+    // HARD_GATE#855/#854 LOG_POLL_6S: pull + fingerprint paint; empty API must not erase fresher local SSE buffer
     try {
       const data = await api(
         "/api/profiles/" + encodeURIComponent(pid) + "/logs"
       );
-      state.logs[pid] = (data && data.lines) || [];
-      const panel = $('[data-log="' + pid + '"]');
-      if (panel) panel.innerHTML = profileLogsHtml(pid);
-      if (state.logModalPid === pid) {
-        const body = $("#log-full-body");
-        if (body) body.innerHTML = profileLogsHtml(pid, { full: true });
+      const lines = (data && data.lines) || [];
+      const prev = state.logs[pid] || [];
+      const prevFp = logsFingerprint(prev);
+      // If backend returns empty but local still has lines and this is not a forced refresh
+      // after clear, keep local until next non-empty pull (SSE may be ahead of poll race).
+      // Forced toastOk / explicit clear path already zeroed state.logs.
+      if (lines.length === 0 && prev.length > 0 && !toastOk) {
+        // keep prev; still ensure DOM painted
+        applyLogsToDom(pid, false);
+        return;
       }
+      state.logs[pid] = lines;
+    try { patchCardDeskStatus(pid); } catch (_e) {}
+      const nextFp = logsFingerprint(lines);
+      if (toastOk || prevFp !== nextFp) applyLogsToDom(pid, !!toastOk);
       if (toastOk) toast("日志已刷新");
     } catch (e) {
       pushGlobal("[" + pid + "] 日志读取失败: " + humanError(e), "error");
     }
   }
 
-  /* HARD_GATE#707-5 / NUDGE#761: dead token UI DOM removed; localStorage/API/?token= only */
-  async function applySavedToken(v, opts) {
-    opts = opts || {};
-    const token = (v || "").trim();
-    if (!token) {
-      toast("请先输入访问令牌");
-      return false;
-    }
-    setToken(token);
-    state.sseNeedTokenLogged = false;
-    await loadSys();
-    try {
-      await loadProfiles(true);
-    } catch (e) {
-      toast(humanError(e, "令牌已保存，但资料加载失败"), "error");
-      connectSSE();
-      return false;
-    }
-    connectSSE();
-    if (opts.toast !== false) toast("访问令牌已保存");
-    pushGlobal("访问令牌已写入本机，事件流将使用令牌重连");
-    return true;
+  function logsFingerprint(lines) {
+    const arr = lines || [];
+    if (!arr.length) return "0";
+    const last = arr[arr.length - 1] || {};
+    return String(arr.length) + "|" + String(last.at || "") + "|" + String(last.line || "");
   }
 
+  function applyLogsToDom(pid, force) {
+    // HARD_GATE#841: paint last-6 (or full modal); never invent blank rows
+    if (!pid) return;
+    /* HARD_GATE#871: keep 云桌面状态 fresh from log lines */
+    try {
+      const st = extractDesktopStatusFromLogs(pid);
+      if (st) {
+        const chip = document.querySelector(
+          '.card[data-id="' + pid + '"] [data-desk-status]'
+        );
+        if (chip && chip.textContent !== st) {
+          chip.textContent = st;
+          chip.setAttribute("title", st);
+        }
+      }
+    } catch (e) {}
+    const fp = logsFingerprint(state.logs[pid]);
+    const panel =
+      $('.log-viewport[data-log="' + pid + '"]') ||
+      $('.log-box[data-log="' + pid + '"]') ||
+      $('[data-log="' + pid + '"]');
+    if (panel) {
+      if (force || panel.getAttribute('data-log-fp') !== fp) {
+        panel.innerHTML = profileLogsHtml(pid);
+        panel.setAttribute('data-log-fp', fp);
+        // pin latest (defensive even with only 6 rows)
+        const pin = function () {
+          panel.scrollTop = panel.scrollHeight;
+        };
+        pin();
+        requestAnimationFrame(function () {
+          pin();
+          requestAnimationFrame(pin);
+        });
+      }
+    }
+    const body = $('#log-full-body');
+    const modal = $('#log-modal') || $('#log-full-modal');
+    const modalPid = modal
+      ? String(modal.getAttribute('data-pid') || state.logModalPid || '')
+      : '';
+    if (
+      body &&
+      modal &&
+      !modal.classList.contains('hidden') &&
+      modal.getAttribute('aria-hidden') !== 'true' &&
+      modalPid === String(pid)
+    ) {
+      const mfp = 'full:' + fp;
+      if (force || body.getAttribute('data-log-fp') !== mfp) {
+        body.innerHTML = profileLogsHtml(pid, { full: true });
+        body.setAttribute('data-log-fp', mfp);
+        body.scrollTop = body.scrollHeight;
+      }
+    }
+  }
+
+  
   function clearSavedToken(opts) {
     opts = opts || {};
     setToken("");
@@ -1307,6 +1511,8 @@
       t.textContent = title || "确认";
       b.textContent = body || "";
       ok.textContent = okText || "确定删除";
+      // HARD_GATE#843: tertiary confirm above config modal
+      modal.style.zIndex = "1300";
       modal.classList.remove("hidden");
       modal.setAttribute("aria-hidden", "false");
       setTimeout(function () {
@@ -1352,7 +1558,7 @@
             body: {
               userServiceId: d.userServiceId || undefined,
               desktopLabel: d.desktopLabel || undefined,
-              protocol: (d.protocol || "ZTE").toUpperCase(),
+              protocol: resolveUserProtocol(d.protocol, d.lastOfficialProtocol),
               protocolHint: (d.protocol || "").toUpperCase() || undefined,
               spuCode: d.spuCode || undefined,
             },
@@ -1439,7 +1645,7 @@
             body: {
               userServiceId: d.userServiceId || undefined,
               desktopLabel: d.desktopLabel || undefined,
-              protocol: (d.protocol || "ZTE").toUpperCase(),
+              protocol: resolveUserProtocol(d.protocol, d.lastOfficialProtocol),
               protocolHint: (d.protocol || "").toUpperCase() || undefined,
               spuCode: d.spuCode || undefined,
             },
@@ -1447,22 +1653,24 @@
         );
       }
       const mode = modeApi(d.mode);
+      const trafficSec = Number(d.trafficSec || 60);
+      const durationSec = durationForMode(mode, trafficSec);
       const data = await api(
         "/api/profiles/" + encodeURIComponent(pid) + "/jobs",
         {
           method: "POST",
           body: {
-            protocol: (d.protocol || "ZTE").toUpperCase(),
+            protocol: resolveUserProtocol(d.protocol, d.lastOfficialProtocol),
             mode: mode,
             clientProfile: d.clientProfile || "linux",
             intervalSec: Math.max(60, Number(d.intervalMin || 5) * 60),
-            trafficSec: Number(d.trafficSec || 60),
-            /* HARD_GATE#729: mode owns forever/once; duration always 0 */
-            durationSec: 0,
+            trafficSec: trafficSec,
+            /* #848: once uses trafficSec; live forever uses 0 */
+            durationSec: durationSec,
           },
         }
       );
-      toast(mode === "live" ? "已开始保活" : "已启动单轮试跑");
+      toast(modeIsOnce(mode) ? "已启动单轮保活" : "已开始保活");
       pushGlobal(
         "[" +
           ((p && p.displayName) || pid) +
@@ -1686,6 +1894,74 @@
     }
   }
 
+  function composerDeskEmptyHtml() {
+    /* HARD_GATE#842: table empty state matching reference layout */
+    return (
+      '<div class="desk-table-wrap"><table class="desk-table" aria-label="云桌面">' +
+      "<thead><tr>" +
+      '<th class="col-idx">序号</th>' +
+      '<th class="col-name">名称</th>' +
+      '<th class="col-id">ID</th>' +
+      '<th class="col-proto">协议</th>' +
+      '<th class="col-act">操作</th>' +
+      "</tr></thead>" +
+      '<tbody id="c-desktop-tbody">' +
+      '<tr class="desk-empty-row"><td colspan="5">' +
+      '<div class="desk-empty"><div class="desk-empty-title">暂无数据</div>' +
+      '<div class="desk-empty-hint">登录后自动获取云桌面列表</div></div>' +
+      "</td></tr></tbody></table></div>"
+    );
+  }
+
+  function desktopSpecText(d) {
+    d = d || {};
+    const spu = d.spuCode || d.spu_code || "";
+    if (spu) return String(spu);
+    const cpu = d.cpu || d.cpuNum || d.cpuCore || "";
+    const mem = d.memory || d.mem || d.ram || "";
+    if (cpu || mem) return String(cpu || "—") + "C / " + String(mem || "—") + "G";
+    const spec = d.spec || d.productName || d.packageName || d.resourceName || "";
+    return spec ? String(spec) : "—";
+  }
+
+  function desktopStatusText(d) {
+    d = d || {};
+    const st =
+      d.vmStatusShow ||
+      d.statusName ||
+      d.statusText ||
+      d.desktopStatusName ||
+      d.pcStatusName ||
+      d.runStatusName ||
+      d.status ||
+      d.desktopStatus ||
+      d.pcStatus ||
+      d.runStatus ||
+      "";
+    if (st === 0 || st === "0") return "未知";
+    return st ? String(st) : "—";
+  }
+
+  function desktopProtocolText(d) {
+    /* HARD_GATE#846: protocol col = spuCode (python CLI: | spuCode：xxx) */
+    d = d || {};
+    const spu = d.spuCode || d.spu_code || d.spu || "";
+    if (spu) return String(spu);
+    const hint = d.protocolHint || d.protocol || d.clientProtocol || "";
+    return hint ? String(hint) : "—";
+  }
+
+
+  function setComposerDeskRefreshEnabled(unlocked) {
+    const btn = $("#c-desk-refresh");
+    if (!btn) return;
+    const pid = state.composer && state.composer.profileId;
+    const busy = !!(pid && state.busy[pid]);
+    btn.disabled = !unlocked || busy;
+    btn.textContent = busy ? "刷新中…" : "刷新列表";
+    btn.classList.toggle("is-loading", busy);
+  }
+
   function setComposerDesktopLock(unlocked) {
     const box = $("#c-desktop");
     if (box) {
@@ -1695,13 +1971,21 @@
       for (let i = 0; i < radios.length; i++) {
         radios[i].disabled = !unlocked;
       }
+      const acts = box.querySelectorAll(".desk-select-btn");
+      for (let i = 0; i < acts.length; i++) {
+        acts[i].disabled = !unlocked;
+      }
     }
-    /* HARD_GATE#707-4 / NUDGE#761: external load control removed; desk-refresh-cta is sole CTA */
+    setComposerDeskRefreshEnabled(unlocked);
+    const sub = $("#c-desktop-sub");
+    if (sub) {
+      sub.textContent = unlocked ? "已加载，可选择云桌面" : "登录后自动获取";
+    }
     const note = $("#c-desktop-note");
     if (note) {
       note.textContent = unlocked
-        ? "官方 list_clouds 已加载；请选择云桌面"
-        : "登录成功后展示官方 list_clouds（名称/状态/spuCode）";
+        ? "官方 list_clouds 已加载；在操作列点击「选择」"
+        : "登录成功后展示官方 list_clouds（名称 / id | spuCode：xxx）";
     }
   }
 
@@ -1711,55 +1995,91 @@
   }
 
   function fillComposerDesktopSelect(list, selectedId) {
+    /* HARD_GATE#842: composer desktop = full-width table */
     const box = $("#c-desktop");
     if (!box) return;
     list = Array.isArray(list) ? list : [];
     if (!list.length) {
-      /* HARD_GATE#747: empty composer = obvious refresh CTA button */
-      box.innerHTML =
-        '<div class="desk-seg is-empty desk-seg-refresh" role="group" aria-label="云桌面刷新">' +
-        deskRefreshCtaHtml("", true, !!(state.composer.profileId && state.busy[state.composer.profileId])) +
-        "</div>";
-      setComposerDesktopLock(true);
+      box.innerHTML = composerDeskEmptyHtml();
+      state.composer.userServiceId = "";
+      state.composer.desktopLabel = "";
+      if ($("#c-userServiceId")) $("#c-userServiceId").value = "";
+      if ($("#c-desktopLabel")) $("#c-desktopLabel").value = "";
+      setComposerDesktopLock(!!(state.composer && state.composer.profileId));
       return;
     }
-    let html = '<div class="desk-seg" role="radiogroup" aria-label="云桌面列表">';
     let matched = false;
+    let rows = "";
     for (let i = 0; i < list.length; i++) {
       const d = list[i] || {};
       const id = String(d.userServiceId || d.id || "");
-      const label = d.desktopLabel || d.name || d.label || id;
+      const spu = String(d.spuCode || d.spu || "");
+      const label = d.desktopLabel || d.skuName || d.sku || d.vmName || d.name || d.labelName || id || "未命名";
       const active =
         selectedId && String(selectedId) === id
           ? true
           : !selectedId && list.length === 1;
       if (active) matched = true;
       const rid = "c-desk-" + i + "-" + id.replace(/[^a-zA-Z0-9_-]/g, "_");
-      html +=
-        '<label class="desk-seg-item' +
-        (active ? " is-active" : "") +
-        '" for="' +
+      const proto = desktopProtocolText(d);
+      const seq = String(i + 1);
+      rows +=
+        '<tr class="' +
+        (active ? "is-selected" : "") +
+        '">' +
+        '<td class="col-idx">' +
+        esc(seq) +
+        "</td>" +
+        '<td class="col-name" title="' +
+        esc(label) +
+        '">' +
+        esc(label) +
+        "</td>" +
+        '<td class="col-id" title="' +
+        esc(id) +
+        '">' +
+        esc(id || "—") +
+        "</td>" +
+        '<td class="col-proto" title="' +
+        esc(proto) +
+        '">' +
+        esc(proto) +
+        "</td>" +
+        '<td class="col-act">' +
+        '<label class="desk-select-wrap" for="' +
         rid +
         '">' +
-        '<input type="radio" name="c-desktop" id="' +
+        '<input type="radio" class="sr-only" name="c-desktop" id="' +
         rid +
         '" value="' +
         esc(id) +
         '" data-label="' +
         esc(label) +
+        '" data-spu="' +
+        esc(proto) +
         '"' +
         (active ? " checked" : "") +
         " />" +
-        '<span class="desk-dot" aria-hidden="true"></span>' +
-        '<span class="desk-seg-text">' +
-        esc(desktopOptionLabel(d)) +
-        "</span></label>";
+        '<span class="btn btn-secondary desk-select-btn' +
+        (active ? " is-active" : "") +
+        '" data-desk-select="1">' +
+        (active ? "已选" : "选择") +
+        "</span></label></td></tr>";
     }
-    /* HARD_GATE#747: keep refresh CTA after selected / list loaded */
-    html += "</div>" + deskRefreshCtaHtml("", true, !!(state.composer.profileId && state.busy[state.composer.profileId]));
-    box.innerHTML = html;
+    box.innerHTML =
+      '<div class="desk-table-wrap"><table class="desk-table" aria-label="云桌面">' +
+      "<thead><tr>" +
+      '<th class="col-idx">序号</th>' +
+      '<th class="col-name">名称</th>' +
+      '<th class="col-id">ID</th>' +
+      '<th class="col-proto">协议</th>' +
+      '<th class="col-act">操作</th>' +
+      "</tr></thead>" +
+      '<tbody id="c-desktop-tbody">' +
+      rows +
+      "</tbody></table></div>";
     if (matched) {
-      const act = box.querySelector(".desk-seg-item.is-active input");
+      const act = box.querySelector('input[name="c-desktop"]:checked');
       if (act) {
         state.composer.userServiceId = act.value || "";
         state.composer.desktopLabel =
@@ -1798,26 +2118,34 @@
   }
 
   function ensureComposerLoginBtn() {
-    // HARD_GATE#768-D: inject 登录 if HTML sole has not added it yet
-    if ($("#c-login")) return;
-    const actions = $(".composer-actions");
+    // HTML already has dual login buttons; keep as no-op fallback.
+    if ($("#c-login") && $("#c-login-sub")) return;
+    const actions = $(".composer-actions") || $(".field-login-cta");
     if (!actions) return;
-    const submit = $("#c-submit");
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "btn btn-secondary";
-    btn.id = "c-login";
-    btn.textContent = "登录";
-    btn.title = "登录并加载官方云桌面列表（不启动保活）";
-    if (submit && submit.parentNode === actions) {
-      actions.insertBefore(btn, submit);
-    } else {
+    if (!$("#c-login")) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn btn-primary btn-login-cta";
+      btn.id = "c-login";
+      btn.textContent = "主帐号获取云桌面";
+      btn.title = "主帐号登录并加载官方云桌面列表（不启动保活）";
       actions.appendChild(btn);
+    }
+    if (!$("#c-login-sub")) {
+      const btn2 = document.createElement("button");
+      btn2.type = "button";
+      btn2.className = "btn btn-secondary btn-login-cta";
+      btn2.id = "c-login-sub";
+      btn2.textContent = "子帐号获取云桌面";
+      btn2.title = "子帐号登录并加载官方云桌面列表（不启动保活）";
+      actions.appendChild(btn2);
     }
   }
 
-  async function composerLoginOnly(ev) {
+  async function composerLoginOnly(ev, modeOpt) {
     if (ev) ev.preventDefault();
+    const mode = modeOpt === "sub" ? "sub" : "main";
+    const isSub = mode === "sub";
     const c = readComposer();
     if (!c.username) {
       setComposerMsg("请填写账号", "error");
@@ -1828,8 +2156,10 @@
       return;
     }
     const loginBtn = $("#c-login");
+    const loginSubBtn = $("#c-login-sub");
     const submitBtn = $("#c-submit");
     if (loginBtn) loginBtn.disabled = true;
+    if (loginSubBtn) loginSubBtn.disabled = true;
     if (submitBtn) submitBtn.disabled = true;
     setComposerMsg("正在登录…");
     try {
@@ -1842,7 +2172,8 @@
             username: c.username,
             password: c.password,
             clientProfile: c.clientProfile || "linux",
-            protocol: (c.protocol || "ZTE").toUpperCase(),
+            protocol: resolveUserProtocol(c.protocol),
+            draft: true,
           },
         });
         const p = created && created.profile;
@@ -1855,17 +2186,26 @@
       }
       state.drafts[pid].username = c.username;
       state.drafts[pid].password = c.password;
-      state.drafts[pid].protocol = (c.protocol || "ZTE").toUpperCase();
+      state.drafts[pid].protocol = resolveUserProtocol(c.protocol);
       state.drafts[pid].lastOfficialProtocol = state.drafts[pid].protocol;
       state.drafts[pid].clientProfile = c.clientProfile;
       state.drafts[pid].mode = c.mode;
       state.drafts[pid].intervalMin = c.intervalMin;
       state.drafts[pid].trafficSec = c.trafficSec;
       state.drafts[pid].durationSec = 0;
+      state.drafts[pid].loginMode = mode;
+      state.drafts[pid].isSubAccount = isSub;
+      state.composer.loginMode = mode;
+      state.composer.isSubAccount = isSub;
 
       await api("/api/profiles/" + encodeURIComponent(pid) + "/login", {
         method: "POST",
-        body: { username: c.username, password: c.password },
+        body: {
+          username: c.username,
+          password: c.password,
+          mode: mode,
+          isSubAccount: isSub,
+        },
       });
       setComposerMsg("登录成功，正在加载官方云桌面列表…", "ok");
       setComposerDesktopLock(true);
@@ -1918,15 +2258,16 @@
         );
         setComposerMsg("登录成功，但桌面列表失败: " + dmsg, "error");
       }
-      await loadProfiles();
-    } catch (e) {
+      /* HARD_GATE#850: login-only must not push draft into timeline */
+        } catch (e) {
       const msg = humanError(e, "登录失败");
       setComposerMsg(msg, "error");
       toast(msg, true);
       pushGlobal("Composer 登录失败: " + msg, "error");
-      await loadProfiles();
-    } finally {
+      /* HARD_GATE#850: login-only must not push draft into timeline */
+        } finally {
       if (loginBtn) loginBtn.disabled = false;
+      if (loginSubBtn) loginSubBtn.disabled = false;
       if (submitBtn) submitBtn.disabled = false;
     }
   }
@@ -1958,7 +2299,7 @@
             username: c.username,
             password: c.password,
             clientProfile: c.clientProfile || "linux",
-            protocol: (c.protocol || "ZTE").toUpperCase(),
+            protocol: resolveUserProtocol(c.protocol),
           },
         });
         const p = created && created.profile;
@@ -1996,7 +2337,7 @@
       ensureDraft(pid);
       state.drafts[pid].username = c.username;
       state.drafts[pid].password = c.password;
-      state.drafts[pid].protocol = (c.protocol || "ZTE").toUpperCase();
+      state.drafts[pid].protocol = resolveUserProtocol(c.protocol);
       state.drafts[pid].lastOfficialProtocol = state.drafts[pid].protocol;
       state.drafts[pid].clientProfile = c.clientProfile;
       state.drafts[pid].mode = c.mode;
@@ -2046,9 +2387,7 @@
               userServiceId: c.userServiceId || undefined,
               desktopLabel: c.desktopLabel || undefined,
               protocol: (
-                c.protocol ||
-                state.drafts[pid].protocol ||
-                "ZTE"
+                resolveUserProtocol(c.protocol, state.drafts[pid] && state.drafts[pid].protocol, state.drafts[pid] && state.drafts[pid].lastOfficialProtocol)
               ).toUpperCase(),
               protocolHint:
                 (c.protocol || state.drafts[pid].protocol || "").toUpperCase() ||
@@ -2063,19 +2402,18 @@
 
       setComposerMsg("正在启动保活…", "ok");
       const mode = modeApi(c.mode);
+      const trafficSec = Number(c.trafficSec || 60);
       await api("/api/profiles/" + encodeURIComponent(pid) + "/jobs", {
         method: "POST",
         body: {
           protocol: (
-            c.protocol ||
-            state.drafts[pid].protocol ||
-            "ZTE"
+            resolveUserProtocol(c.protocol, state.drafts[pid] && state.drafts[pid].protocol, state.drafts[pid] && state.drafts[pid].lastOfficialProtocol)
           ).toUpperCase(),
           mode: mode,
           clientProfile: c.clientProfile || "linux",
           intervalSec: Math.max(60, Number(c.intervalMin || 5) * 60),
-          trafficSec: Number(c.trafficSec || 60),
-          durationSec: 0,
+          trafficSec: trafficSec,
+          durationSec: durationForMode(mode, trafficSec),
         },
       });
       toast("保存并保活成功");
@@ -2212,7 +2550,40 @@
       else if (act === "delete") onDelete(pid);
       else if (act === "desktops") onDesktops(pid);
       else if (act === "login") onConfigLogin(pid);
-      else if (act === "logs") { openLogModal(pid); loadLogs(pid, true); }
+      else if (act === "logs") {
+        // HARD_GATE#839: 刷新日志只更新卡片视口，不打开二级完整日志
+        loadLogs(pid, true).catch(function () {});
+      } else if (act === "clear-logs") {
+        // HARD_GATE#853: real backend clear (not FE-only fake clear)
+        if (!pid) return;
+        const btn = ev.target.closest("[data-act]");
+        if (btn) btn.disabled = true;
+        api("/api/profiles/" + encodeURIComponent(pid) + "/logs", { method: "DELETE" })
+          .then(function (data) {
+            state.logs[pid] = [];
+    try { patchCardDeskStatus(pid); } catch (_e) {}
+            state._logClearedAt = state._logClearedAt || {};
+            state._logClearedAt[pid] = Date.now();
+            applyLogsToDom(pid, true);
+            if (state.logModalPid === pid) {
+              const full =
+                $("#log-full-body") ||
+                $("#log-full .log-box") ||
+                $(".log-full .log-box");
+              if (full) full.innerHTML = profileLogsHtml(pid, { full: true });
+            }
+            const n = data && data.cleared != null ? data.cleared : 0;
+            toast("已清空该账号日志" + (n ? "（" + n + "）" : ""));
+            pushGlobal("[" + pid + "] 卡片日志已清空（后端缓冲 " + n + "）");
+          })
+          .catch(function (err) {
+            toast((err && err.message) || "清空日志失败", "error");
+            pushGlobal("[" + pid + "] 清空日志失败: " + ((err && err.message) || err), "error");
+          })
+          .finally(function () {
+            if (btn) btn.disabled = false;
+          });
+      }
     });
 
     root.addEventListener("input", function (ev) {
@@ -2363,7 +2734,7 @@
     const line = data.line || data.message || "";
     if (!line) return;
     const pid = data.profileId || data.profile_id || "";
-    // HARD_GATE#768-B: keepalive/job logs stay on card only via pushCard; never global WebUI log
+    // HARD_GATE#854: SSE buffers + paints via pushCard→applyLogsToDom (clear后新日志立即可见)
     if (pid) pushCard(pid, line, data.at || new Date().toISOString());
   }
 
@@ -2409,6 +2780,16 @@
           applyJobLogEvent(JSON.parse(ev.data));
         } catch (_) {}
       });
+      es.addEventListener("job_log_cleared", function (ev) {
+        try {
+          const d = JSON.parse(ev.data) || {};
+          const pid = d.profileId || d.profile_id || "";
+          if (!pid) return;
+          state.logs[pid] = [];
+    try { patchCardDeskStatus(pid); } catch (_e) {}
+          applyLogsToDom(pid, true);
+        } catch (_) {}
+      });
       es.onmessage = function (ev) {
         try {
           const data = JSON.parse(ev.data);
@@ -2427,12 +2808,41 @@
     } catch (_) {}
   }
 
+
+  // HARD_GATE#831 CARD_LOG_DBLCLICK: double-click card log viewport opens full modal
+  document.addEventListener(
+    "dblclick",
+    function (ev) {
+      const t = ev.target;
+      if (!t || !t.closest) return;
+      const box = t.closest('[data-log], .log-panel, .card-surface-log-only, .log-viewport');
+      if (!box) return;
+      let pid = box.getAttribute("data-log");
+      if (!pid) {
+        const card = box.closest("[data-pid], .account-card, .card");
+        if (card) pid = card.getAttribute("data-pid") || (card.dataset && card.dataset.pid);
+      }
+      if (!pid && box.querySelector) {
+        const inner = box.querySelector("[data-log]");
+        if (inner) pid = inner.getAttribute("data-log");
+      }
+      if (!pid) return;
+      ev.preventDefault();
+      openLogModal(pid);
+      loadLogs(pid).catch(function () {});
+    },
+    false
+  );
+
   function startPolling() {
+    // HARD_GATE#831: profile/status poll 4s; card logs poll 6s (HARD_GATE#852)
     setInterval(async function () {
       try {
         await loadJobs();
         const data = await api("/api/profiles");
-        const next = (data && data.profiles) || [];
+        const next = ((data && data.profiles) || []).filter(function (p) {
+          return p && !p.draft && p.draft !== true && p.draft !== 1 && p.draft !== "1";
+        });
         const prevMap = Object.create(null);
         for (let i = 0; i < state.profiles.length; i++) {
           prevMap[state.profiles[i].id] = statusOf(state.profiles[i]);
@@ -2470,7 +2880,12 @@
           active && active.getAttribute ? active.getAttribute("data-key") : null;
         const selStart = active && active.selectionStart;
         const selEnd = active && active.selectionEnd;
-        if (needFull || state.configPid) {
+        /* HARD_GATE#851: NEVER full-render while config panel open (kills flicker) */
+        if (state.configPid) {
+          for (let i = 0; i < next.length; i++) {
+            patchCardStatus(next[i].id);
+          }
+        } else if (needFull) {
           renderCards();
         } else {
           for (let i = 0; i < next.length; i++) {
@@ -2514,22 +2929,45 @@
             );
           }
         });
-        if (state.configPid) {
-          const cp = next.find(function (x) {
-            return x.id === state.configPid;
-          });
-          if (cp && statusOf(cp) === "running") {
-            loadLogs(state.configPid).catch(function () {});
-          }
-        }
       } catch (_) {}
     }, 4000);
+
+    setInterval(async function () {
+      try {
+        // HARD_GATE#855 / #852: 6s log poll — applyLogsToDom only (fingerprint + modal), never full-render
+        const list = state.profiles || [];
+        for (let i = 0; i < list.length; i++) {
+          const p = list[i];
+          if (!p || !p.id) continue;
+          await loadLogs(p.id).catch(function () {});
+        }
+        // open modal kept in sync via applyLogsToDom(state.logModalPid)
+      } catch (_) {}
+    }, 6000); /* HARD_GATE#856/#855/#852: card log poll 6s */
   }
 
   function wireChrome() {
     $("#btn-refresh") &&
-      $("#btn-refresh").addEventListener("click", function () {
-        loadProfiles(false);
+      $("#btn-refresh").addEventListener("click", async function () {
+        // HARD_GATE#843: top refresh reloads profiles + jobs + all card logs (minute paint path)
+        const btn = $("#btn-refresh");
+        if (btn) btn.disabled = true;
+        try {
+          await loadJobs();
+          await loadProfiles(false);
+          const ids = state.profiles.map(function (p) { return p.id; });
+          await Promise.all(
+            ids.map(function (pid) {
+              return loadLogs(pid, false).catch(function () {});
+            })
+          );
+          toast("已刷新账号与日志");
+          pushGlobal("整页刷新完成 · " + ids.length + " 个账号");
+        } catch (e) {
+          toast(humanError(e, "刷新失败"), true);
+        } finally {
+          if (btn) btn.disabled = false;
+        }
       });
     $("#btn-clear-log") &&
       $("#btn-clear-log").addEventListener("click", function () {
@@ -2543,7 +2981,11 @@
     ensureComposerLoginBtn();
     $("#c-login") &&
       $("#c-login").addEventListener("click", function (ev) {
-        composerLoginOnly(ev);
+        composerLoginOnly(ev, "main");
+      });
+    $("#c-login-sub") &&
+      $("#c-login-sub").addEventListener("click", function (ev) {
+        composerLoginOnly(ev, "sub");
       });
     $("#composer-form") &&
       $("#composer-form").addEventListener("submit", composerSaveAndStart);
@@ -2580,9 +3022,68 @@
       });
     });
 
+    $("#c-desk-refresh") &&
+      $("#c-desk-refresh").addEventListener("click", function (ev) {
+        ev.preventDefault();
+        const fake = { target: ev.currentTarget, preventDefault: function () {} };
+        const box = $("#c-desktop");
+        if (box) {
+          // reuse same path as in-panel refresh by synthesizing event on box listener
+        }
+        const pid = state.composer.profileId;
+        if (!pid) {
+          setComposerMsg("请先登录以加载官方云桌面列表", "error");
+          return;
+        }
+        (async function () {
+          const hit = $("#c-desk-refresh");
+          try {
+            state.busy[pid] = true;
+            setComposerMsg("正在刷新官方云桌面列表…");
+            setComposerDeskRefreshEnabled(true);
+            const deskData = await api(
+              "/api/profiles/" + encodeURIComponent(pid) + "/desktops"
+            );
+            const list =
+              (deskData && (deskData.desktops || deskData.items || deskData.list)) ||
+              (Array.isArray(deskData) ? deskData : []) ||
+              [];
+            state.desktops[pid] = list;
+            fillComposerDesktopSelect(list, state.composer.userServiceId || "");
+            setComposerMsg(
+              list.length
+                ? "已刷新官方云桌面 " + list.length + " 台"
+                : "官方列表为空",
+              list.length ? "ok" : "warn"
+            );
+          } catch (err) {
+            setComposerMsg((err && err.message) || "刷新云桌面失败", "error");
+          } finally {
+            state.busy[pid] = false;
+            fillComposerDesktopSelect(
+              state.desktops[pid] || [],
+              state.composer.userServiceId || ""
+            );
+          }
+        })();
+      });
+
     $("#c-desktop") &&
       $("#c-desktop").addEventListener("click", function (ev) {
-        /* HARD_GATE#707-2: empty composer desk area is the refresh control */
+        /* HARD_GATE#842: row 操作「选择」*/
+        const sel = ev.target && ev.target.closest
+          ? ev.target.closest("[data-desk-select]")
+          : null;
+        if (sel) {
+          const lab = sel.closest("label");
+          const input = lab && lab.querySelector('input[type="radio"]');
+          if (input && !input.disabled) {
+            input.checked = true;
+            input.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+          return;
+        }
+        /* HARD_GATE#707-2: legacy in-panel refresh control */
         const hit = ev.target && ev.target.closest
           ? ev.target.closest('[data-act="composer-desktops"]')
           : null;
@@ -2644,10 +3145,29 @@
         const label = t.getAttribute("data-label") || id;
         state.composer.userServiceId = id;
         state.composer.desktopLabel = label;
+        var spuPick = t.getAttribute("data-spu") || "";
+        if (!spuPick) {
+          var pid0 = state.composer.profileId;
+          var list0 = (pid0 && state.desktops[pid0]) || [];
+          for (var si = 0; si < list0.length; si++) {
+            var dd = list0[si] || {};
+            if (String(dd.userServiceId || dd.id || "") === String(id)) {
+              spuPick = String(dd.spuCode || dd.spu || "");
+              break;
+            }
+          }
+        }
+        state.composer.spuCode = spuPick;
         if ($("#c-userServiceId")) $("#c-userServiceId").value = id;
         if ($("#c-desktopLabel")) $("#c-desktopLabel").value = label;
-        $$("#c-desktop .desk-seg-item").forEach(function (lab) {
-          lab.classList.toggle("is-active", lab.contains(t));
+        if ($("#c-spuCode")) $("#c-spuCode").value = spuPick;
+        $$("#c-desktop tbody tr").forEach(function (tr) {
+          tr.classList.toggle("is-selected", tr.contains(t));
+        });
+        $$("#c-desktop .desk-select-btn").forEach(function (btn) {
+          const on = btn.closest("label") && btn.closest("label").contains(t);
+          btn.classList.toggle("is-active", !!on);
+          btn.textContent = on ? "已选" : "选择";
         });
         const pid = state.composer.profileId;
         const list = (pid && state.desktops[pid]) || [];
@@ -2722,7 +3242,7 @@
   async function boot() {
     bindCardEvents();
     wireChrome();
-    pushGlobal("WebUI 就绪 · 多账户保活控制台");
+    pushGlobal("爱家移动云电脑就绪 · 多账户保活控制台");
     await loadSys();
     await loadProfiles(true);
     connectSSE();

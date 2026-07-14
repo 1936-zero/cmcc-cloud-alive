@@ -93,16 +93,24 @@ a {
   display: flex;
   align-items: center;
   gap: 12px;
-  min-width: 220px;
+  min-width: 260px;
 }
 
 .brand-mark {
   width: 34px;
   height: 34px;
   border-radius: 8px;
+  object-fit: cover;
+  display: block;
+  flex: 0 0 34px;
   background:
     linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
   box-shadow: 0 0 0 1px rgba(98, 95, 255, 0.18), 0 6px 14px rgba(98, 95, 255, 0.18);
+}
+img.brand-mark {
+  background: #fff;
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 2px rgba(24, 24, 27, 0.06);
 }
 
 .brand-text h1 {
@@ -697,10 +705,10 @@ a {
   min-height: 0;
 }
 .card-log-expanded .log-box {
-  /* true 6 lines: align with #810 12.75em / 188px system */
+  /* true 6 lines: align with #810 14.025em / 188px system */
   height: 188px;
   max-height: 188px;
-  min-height: 188px;
+  min-height: 18.15em; /* HARD_GATE#845 */
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
@@ -711,7 +719,7 @@ a {
 }
 
 #global-log {
-  max-height: 160px;
+  max-height: 280px; /* HARD_GATE#845: was 160, truncated */
 }
 
 .log-line {
@@ -772,6 +780,11 @@ a {
   justify-content: center;
   padding: 16px;
   background: rgba(24, 24, 27, 0.36);
+}
+
+/* HARD_GATE#843: delete/confirm tertiary layer above config(80) and log-full(120) base */
+#modal.modal {
+  z-index: 1300 !important;
 }
 
 .modal.hidden {
@@ -903,7 +916,7 @@ a {
 }
 
 .surface-log .log-box {
-  max-height: 188px; /* HARD_GATE#829 unify with #810 */
+  max-height: 207px; /* HARD_GATE#845 +10% from 188 */
   min-height: 72px;
   overflow: auto;
 }
@@ -1268,9 +1281,9 @@ a {
   }
 }
 
-/* HARD GATE OPS#508 / HARD_GATE#829 — log viewport ~6 lines (=#810 12.75em) */
+/* HARD GATE OPS#508 / HARD_GATE#829 — log viewport ~6 lines (=#810 14.025em) */
 .log-viewport {
-  max-height: 12.75em; /* true 6 lines */
+  max-height: 18.15em; /* HARD_GATE#845 */ /* true 6 lines */
   overflow-y: auto;
   overscroll-behavior: contain;
   line-height: 1.45;
@@ -1491,8 +1504,8 @@ a {
 .card-surface-dual .log-viewport,
 .log-viewport {
   flex: 1 1 auto;
-  min-height: 0;
-  max-height: 12.75em; /* HARD_GATE#829 =#810 true 6 lines */
+  min-height: 18.15em; /* HARD_GATE#845 */
+  max-height: 14.025em; /* HARD_GATE#829 =#810 true 6 lines */
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -1625,8 +1638,8 @@ a {
 .card-surface-dual .log-viewport,
 .log-viewport {
   flex: 1 1 auto;
-  min-height: 12.75em !important; /* HARD_GATE#829 =#810 true 6 lines */
-  max-height: 12.75em !important;
+  min-height: 18.15em; /* HARD_GATE#845 */ /* HARD_GATE#829 =#810 true 6 lines */
+  max-height: 14.025em !important;
   overflow-y: auto !important;
   overscroll-behavior: contain;
 }
@@ -1748,17 +1761,17 @@ button.desk-refresh-cta:disabled,
   min-height: 36px !important;
   cursor: pointer;
 }
-/* HARD_GATE#784/#829: card log viewport fixed true 6 lines (=#810 12.75em); internal scroll */
+/* HARD_GATE#784/#829: card log viewport fixed true 6 lines (=#810 14.025em); internal scroll */
 .card-surface-dual .log-box.log-viewport,
 .card-surface-dual .log-viewport,
 .log-box.log-viewport,
 .log-viewport {
-  flex: 0 0 12.75em !important;
+  flex: 0 0 14.025em !important;
   flex-grow: 0 !important;
   flex-shrink: 0 !important;
-  height: 12.75em !important; /* true 6 lines */
-  min-height: 12.75em !important;
-  max-height: 12.75em !important;
+  height: 18.15em; /* HARD_GATE#845 */ /* true 6 lines */
+  min-height: 18.15em; /* HARD_GATE#845 */
+  max-height: 14.025em !important;
   overflow-x: hidden !important;
   overflow-y: auto !important;
   overscroll-behavior: contain;
@@ -1878,7 +1891,7 @@ button.log-open-full {
    - short account/password + content-width login after pwd
    - left: creds + large desk list; right: displayName + interval + segs
    - config modal desktop area restores clear border container
-   hold #781 text-link CTA / #784+#810 log-viewport 12.75em / #768 login btn */
+   hold #781 text-link CTA / #784+#810 log-viewport 14.025em / #768 login btn */
 .form-grid-composer {
   display: grid !important;
   grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.9fr) !important;
@@ -2075,19 +2088,19 @@ button.btn-login-inline {
 
 
 /* HARD_GATE#810 CARD_LOG_6LINES_TALLER
-   True 6-line card log viewport (sole system 12.75em / 188px after #829 purge).
+   True 6-line card log viewport (sole system 14.025em / 188px after #829 purge).
    Keep fixed height + internal scroll; no whole-card reflow. DBLCLICK = JS sole. */
 .card-surface-dual .log-box.log-viewport,
 .card-surface-dual .log-viewport,
 .log-box.log-viewport,
 .log-viewport {
   /* 12px mono: line ~ (1.45*12 + 4pad)=21.4px; *6 + box pad 16 ≈ 144px ≈ 12em */
-  flex: 0 0 12.75em !important;
+  flex: 0 0 14.025em !important;
   flex-grow: 0 !important;
   flex-shrink: 0 !important;
-  height: 12.75em !important;
-  min-height: 12.75em !important;
-  max-height: 12.75em !important;
+  height: 18.15em; /* HARD_GATE#845 */
+  min-height: 18.15em; /* HARD_GATE#845 */
+  max-height: 14.025em !important;
   overflow-x: hidden !important;
   overflow-y: auto !important;
   overscroll-behavior: contain;
@@ -2099,7 +2112,7 @@ button.btn-login-inline {
 
 .card-surface-dual .surface-log {
   /* head + true 6-line viewport; card taller as a whole */
-  min-height: 188px !important;
+  min-height: 207px !important; /* HARD_GATE#845 */
   height: auto;
   align-self: stretch;
   overflow: hidden;
@@ -2107,7 +2120,7 @@ button.btn-login-inline {
 
 .card-surface-dual .surface-log .log-box.log-viewport,
 .card-surface-dual .surface-log .log-viewport {
-  flex: 0 0 12.75em !important;
+  flex: 0 0 14.025em !important;
 }
 
 /* slightly taller dual surface so left/right stay balanced */
@@ -2214,4 +2227,2584 @@ button.btn-login-inline {
 .log-full-modal:not([hidden]):not(.hidden) > .log-full-card,
 #log-full-modal:not([hidden]):not(.hidden) > .modal-card {
   pointer-events: auto !important;
+}
+
+/* HARD_GATE#831: card log shows 6 lines; modal close solid */
+.card-surface-log-only .log-viewport,
+.card-surface-log-only .log-box[data-log],
+.log-panel .log-viewport,
+.log-panel .log-box[data-log],
+.card-log-expanded .log-box,
+.card-log-expanded .log-viewport {
+  min-height: 18.15em !important; /* HARD_GATE#845 +10% */
+  height: 18.15em !important; /* HARD_GATE#845 +10% */
+  max-height: 18.15em !important; /* HARD_GATE#845 +10% */
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+}
+.card-surface-log-only .log-line,
+.log-panel .log-line,
+.card-log-expanded .log-line {
+  min-height: 1.55em;
+  line-height: 1.55em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.account-card,
+.card[data-pid] {
+  min-height: 22em;
+}
+.log-full-modal .modal-x,
+#log-full-close,
+.log-full-modal .log-full-close {
+  position: relative;
+  z-index: 5;
+  min-width: 36px;
+  min-height: 36px;
+  line-height: 1;
+  font-size: 22px;
+  cursor: pointer;
+  pointer-events: auto !important;
+}
+.log-full-modal.hidden,
+.log-full-modal.is-hidden,
+#log-full-modal.hidden,
+#log-full-modal[hidden],
+#log-modal.hidden,
+#log-modal[hidden] {
+  display: none !important;
+  pointer-events: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+.log-full-modal:not(.hidden):not([hidden]),
+#log-full-modal:not(.hidden):not([hidden]),
+#log-modal:not(.hidden):not([hidden]) {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+body.log-modal-open {
+  overflow: hidden;
+}
+/* config desktop field border restore */
+.config-desktop-field,
+#config-modal .config-desktop-field,
+.desktop-field.config-desktop-field {
+  border: 1px solid var(--border, #d0d7de) !important;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--surface-2, rgba(0,0,0,0.03));
+}
+/* composer compact: login after password, displayName on right */
+.composer-col-left .login-after-pwd,
+#composer .login-after-pwd {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+}
+.composer-col-left #c-username,
+.composer-col-left #c-password {
+  max-width: 100%;
+}
+#composer .btn-login-inline,
+.login-after-pwd .btn,
+#btn-composer-login {
+  min-width: 72px;
+  width: auto;
+  white-space: nowrap;
+}
+
+
+
+/* HARD_GATE#832: viewport = 6 lines fixed height; full history scrolls inside */
+.card-surface-log-only .log-viewport,
+.card-surface-log-only .log-box[data-log],
+.log-panel .log-viewport,
+.log-panel .log-box[data-log],
+.card-log-expanded .log-box,
+.card-log-expanded .log-viewport,
+.log-box.log-viewport {
+  flex: 0 0 16.5em !important;
+  flex-grow: 0 !important;
+  flex-shrink: 0 !important;
+  height: 18.15em !important; /* HARD_GATE#845 +10% */
+  min-height: 18.15em !important; /* HARD_GATE#845 +10% */
+  max-height: 18.15em !important; /* HARD_GATE#845 +10% */
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  overscroll-behavior: contain;
+  line-height: 1.55em;
+  font-size: 12px;
+}
+.card-surface-log-only .log-line,
+.log-panel .log-line,
+.card-log-expanded .log-line,
+.log-viewport .log-line {
+  min-height: 1.55em !important;
+  line-height: 1.55em !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.card[data-id],
+.card[data-pid],
+.account-card {
+  min-height: 32em; /* HARD_GATE#845 raised #856d */
+}
+
+/* ===== HARD_GATE#834 pain fixes: layout / border / CTA / log viewport / red error ===== */
+.card-error:empty,
+.card-error.hidden,
+#config-modal-error:empty,
+#config-modal-error.hidden {
+  display: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  min-height: 0 !important;
+  height: 0 !important;
+  overflow: hidden !important;
+  background: transparent !important;
+}
+
+.card[data-id],
+.card[data-pid],
+.account-card {
+  min-height: 26em;
+}
+
+.card-surface-log-only .log-viewport,
+.log-box.log-viewport,
+.card-log-expanded .log-viewport {
+  /* 6 lines * 1.55em + head breathing room */
+  height: calc(1.55em * 6 + 8px) !important;
+  max-height: calc(1.55em * 6 + 8px) !important;
+  min-height: calc(1.55em * 6 + 8px) !important;
+  overflow-y: auto !important;
+}
+
+/* composer: short account/password + compact login after password */
+.form-grid-composer {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.15fr) !important;
+  gap: 12px 18px !important;
+  align-items: start !important;
+}
+.composer-col-left {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 10px !important;
+  min-width: 0 !important;
+}
+.composer-col-right {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 10px !important;
+  min-width: 0 !important;
+}
+.composer-col-left .field#c-username,
+.composer-col-left #c-username,
+.composer-col-left #c-password,
+.composer-col-left input#c-username,
+.composer-col-left input#c-password {
+  max-width: 16rem !important;
+  width: 100% !important;
+}
+.composer-login-row,
+.login-after-pwd {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  margin-top: 0 !important;
+}
+#c-login,
+.btn-login-inline,
+.composer-login-row #c-login {
+  width: auto !important;
+  min-width: 4.5rem !important;
+  max-width: 7rem !important;
+  height: 36px !important;
+  padding: 0 14px !important;
+  flex: 0 0 auto !important;
+}
+.composer-desktop-field,
+.desktop-field.config-desktop-field,
+.config-desktop-field,
+.composer .desk-seg-wrap,
+.config-form .desk-seg-wrap {
+  border: 1px solid var(--border, rgba(30, 34, 56, 0.14)) !important;
+  border-radius: 10px !important;
+  padding: 10px !important;
+  background: rgba(255, 255, 255, 0.55) !important;
+  box-sizing: border-box !important;
+}
+.desk-seg {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+}
+.desk-seg .seg-btn,
+.desk-seg .desk-item {
+  min-height: 36px !important;
+  height: auto !important;
+  border-radius: 8px !important;
+}
+
+/* refresh CTA: CLI-proxy style text link, obvious but not thick ugly button */
+.desk-refresh-cta,
+button.desk-refresh-cta,
+.desk-refresh-link,
+button.desk-refresh-link {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  width: 100% !important;
+  min-height: 40px !important;
+  margin: 4px 0 2px !important;
+  padding: 8px 12px !important;
+  border: 1px dashed rgba(47, 107, 255, 0.45) !important;
+  border-radius: 8px !important;
+  background: rgba(47, 107, 255, 0.06) !important;
+  color: #2f6bff !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  text-decoration: none !important;
+  box-shadow: none !important;
+  cursor: pointer !important;
+}
+.desk-refresh-cta:hover,
+button.desk-refresh-cta:hover,
+.desk-refresh-link:hover {
+  background: rgba(47, 107, 255, 0.12) !important;
+  border-color: rgba(47, 107, 255, 0.7) !important;
+}
+.desk-refresh-cta.is-loading,
+.desk-refresh-cta:disabled {
+  opacity: 0.65 !important;
+  cursor: wait !important;
+}
+
+/* log modal close always clickable above mask */
+.log-full-modal,
+#log-modal,
+#log-full-modal {
+  z-index: 1200 !important;
+}
+.log-full-modal.open,
+.log-full-modal.is-open,
+#log-modal.open,
+#log-full-modal.open {
+  display: flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+.log-full-head .modal-x,
+#log-full-close {
+  position: relative !important;
+  z-index: 2 !important;
+  min-width: 36px !important;
+  min-height: 36px !important;
+  font-size: 22px !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+  pointer-events: auto !important;
+}
+
+/* HARD_GATE#838: FORCE card log viewport = exactly 6 single-line rows (beat legacy dual/surface !important) */
+:root {
+  --log-line-h: 1.55em;
+  --log-view-pad: 8px;
+  --log-view-h: calc(var(--log-line-h) * 6 + var(--log-view-pad));
+}
+.account-card .log-panel.surface-log,
+.account-card .log-panel.card-log-expanded,
+.card .log-panel.surface-log,
+.card .log-panel.card-log-expanded,
+.cards .log-panel.surface-log,
+.cards .log-panel.card-log-expanded,
+.card-surface-dual .log-panel,
+.card-surface-log-only .log-panel {
+  display: flex !important;
+  flex-direction: column !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  flex: 0 0 auto !important;
+  overflow: hidden !important;
+}
+/* beat .card-surface-dual .log-box.log-viewport { flex:0 0 14.025em; max-height:14.025em !important; height:16.5em } */
+.account-card .log-viewport,
+.account-card .log-box,
+.account-card .log-box.log-viewport,
+.account-card .log-panel .log-viewport,
+.account-card .log-panel .log-box,
+.card .log-viewport,
+.card .log-box,
+.card .log-box.log-viewport,
+.card .log-panel .log-viewport,
+.card .log-panel .log-box,
+.cards .log-viewport,
+.cards .log-box,
+.cards .log-box.log-viewport,
+.card-surface-dual .log-box.log-viewport,
+.card-surface-dual .log-viewport,
+.card-surface-dual .log-box,
+.card-surface-log-only .log-viewport,
+.card-surface-log-only .log-box,
+.card-surface-log-only .log-box[data-log],
+.log-panel.surface-log .log-viewport,
+.log-panel.card-log-expanded .log-viewport,
+.log-panel.surface-log .log-box,
+.log-panel.card-log-expanded .log-box,
+.log-panel .log-box.log-viewport,
+.log-box.log-viewport.log-viewport {
+  flex: 0 0 var(--log-view-h) !important;
+  flex-grow: 0 !important;
+  flex-shrink: 0 !important;
+  height: var(--log-view-h) !important;
+  min-height: var(--log-view-h) !important;
+  max-height: var(--log-view-h) !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain !important;
+  box-sizing: border-box !important;
+  padding: 4px 8px !important;
+  line-height: var(--log-line-h) !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  font-size: 12px !important;
+}
+/* single-line rows: no wrap compression (6 entries always) */
+.account-card .log-line,
+.account-card .log-line.log-line-card,
+.account-card .log-line.log-line-py,
+.card .log-line,
+.card .log-line.log-line-card,
+.card .log-line.log-line-py,
+.cards .log-line,
+.card-surface-dual .log-line,
+.card-surface-log-only .log-line,
+.log-panel.surface-log .log-line,
+.log-panel.card-log-expanded .log-line,
+.log-panel .log-line,
+.log-viewport .log-line,
+.log-box .log-line,
+.log-box.log-viewport .log-line {
+  display: block !important;
+  height: var(--log-line-h) !important;
+  min-height: var(--log-line-h) !important;
+  max-height: var(--log-line-h) !important;
+  line-height: var(--log-line-h) !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  word-break: normal !important;
+  box-sizing: border-box !important;
+}
+.account-card .log-line .log-text,
+.card .log-line .log-text,
+.cards .log-line .log-text,
+.log-viewport .log-line .log-text,
+.log-box .log-line .log-text,
+.log-panel .log-line .log-text {
+  display: block !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  line-height: var(--log-line-h) !important;
+  height: var(--log-line-h) !important;
+  max-width: 100% !important;
+}
+/* modal/full log still wraps */
+.log-full .log-line,
+.log-full .log-line .log-text,
+.log-line.log-line-full,
+.log-line.log-line-full .log-text {
+  white-space: pre-wrap !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  height: auto !important;
+  max-height: none !important;
+  min-height: var(--log-line-h) !important;
+  word-break: break-word !important;
+}
+.account-card,
+.card.account-card,
+.cards .card {
+  min-height: 32em !important; /* was 30.8em -> #856d */
+}
+
+
+/* ========== HARD_GATE#839: card log = full text of ~6 latest entries (wrap OK), wheel for rest ========== */
+.card .card-surface-log.card-log-expanded .log-viewport.log-box,
+.card .card-surface-log-only .log-viewport.log-box,
+.card .log-box.log-viewport,
+.card-log-expanded .log-box.log-viewport,
+.card .log-viewport[data-log],
+.card [data-log].log-viewport,
+.card [data-log].log-box {
+  /* room for ~6 complete entries; long lines wrap so text is fully readable */
+  height: auto !important;
+  min-height: 11.55em !important; /* HARD_GATE#845 +10% */
+  max-height: 18.15em !important; /* HARD_GATE#845 +10% */
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain !important;
+  scroll-behavior: auto !important;
+  padding: 6px 8px !important;
+  box-sizing: border-box !important;
+  white-space: normal !important;
+}
+
+.card .log-line-card,
+.card .log-line.log-line-card,
+.card .log-line-card .log-text,
+.card .log-line.log-line-card .log-text,
+.card .log-viewport .log-line,
+.card .log-viewport .log-line .log-text,
+.card .log-box .log-line,
+.card .log-box .log-line .log-text {
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+  overflow-wrap: anywhere !important;
+  text-overflow: clip !important;
+  overflow: visible !important;
+  max-width: 100% !important;
+  display: block !important;
+  height: auto !important;
+  max-height: none !important;
+  line-height: 1.45 !important;
+  font-size: 12px !important;
+  margin: 0 0 2px 0 !important;
+  padding: 0 !important;
+}
+
+.card .log-line-card.log-line-pad,
+.card .log-line-pad {
+  display: none !important;
+}
+
+.card .log-line-card.log-line-empty .log-text {
+  opacity: 0.7;
+  white-space: normal !important;
+}
+
+.log-full-modal .log-line-full,
+#log-full-modal .log-line-full,
+.log-full-dialog .log-line-full {
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+}
+
+
+/* ========== HARD_GATE#841: card log = content-sized, last 6 rows, NO empty min-height ========== */
+:root {
+  --log-line-h: auto;
+  --log-view-h: auto;
+}
+
+/* each log row: full text, wrap, no fixed row height */
+.account-card .log-line,
+.account-card .log-line.log-line-card,
+.account-card .log-line .log-text,
+.card .log-line,
+.card .log-line.log-line-card,
+.card .log-line .log-text,
+.cards .log-line,
+.cards .log-line .log-text,
+.log-viewport .log-line,
+.log-viewport .log-line .log-text,
+.log-box .log-line,
+.log-box .log-line .log-text,
+.card-log-expanded .log-line,
+.card-surface-log-only .log-line,
+.card-surface-dual .log-line {
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  line-height: 1.45 !important;
+  white-space: pre-wrap !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  word-break: break-word !important;
+  overflow-wrap: anywhere !important;
+  display: block !important;
+  padding: 2px 0 !important;
+  margin: 0 !important;
+  font-size: 12px !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+}
+
+/* viewport: height follows content (up to ~6 rows); never force blank min-height */
+.account-card .log-viewport,
+.account-card .log-box,
+.account-card .log-box.log-viewport,
+.account-card .log-panel .log-viewport,
+.account-card .log-panel .log-box,
+.card .log-viewport,
+.card .log-box,
+.card .log-box.log-viewport,
+.card .log-panel .log-viewport,
+.card .log-panel .log-box,
+.card .card-surface-log-only .log-viewport,
+.card .card-surface-log-only .log-box,
+.card .card-log-expanded .log-viewport,
+.card .card-log-expanded .log-box,
+.card-surface-dual .log-box.log-viewport,
+.card-surface-dual .log-viewport,
+.card-surface-log-only .log-viewport,
+.card-surface-log-only .log-box[data-log],
+.log-box.log-viewport,
+.card-log-expanded .log-box,
+.card-log-expanded .log-viewport,
+.card [data-log].log-viewport,
+.card [data-log].log-box {
+  flex: 0 1 auto !important;
+  flex-grow: 0 !important;
+  flex-shrink: 1 !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important; /* JS only injects last 6 rows */
+  overflow-x: hidden !important;
+  overflow-y: visible !important;
+  box-sizing: border-box !important;
+  padding: 6px 8px !important;
+  white-space: normal !important;
+}
+
+/* kill earlier fixed 6-line / 14.025em / 16.5em / 24em locks */
+.account-card .log-viewport,
+.card .log-viewport,
+.card .log-box.log-viewport {
+  --log-view-h: auto !important;
+}
+
+.account-card .log-panel.surface-log,
+.account-card .log-panel.card-log-expanded,
+.card .log-panel.surface-log,
+.card .log-panel.card-log-expanded,
+.card .card-surface-log,
+.card .card-surface-log-only,
+.card-surface-dual .surface-log {
+  overflow: visible !important;
+  max-height: none !important;
+  min-height: 0 !important;
+  height: auto !important;
+}
+
+/* card height: comfortable DISABLED by #856d — keep fixed tower */
+.account-card,
+.card.account-card,
+.cards .card,
+.card[data-id],
+.card[data-pid] {
+  min-height: 32em !important;
+  height: 32em !important;
+  max-height: 32em !important;
+}
+
+.card .log-line-card.log-line-pad,
+.card .log-line-pad {
+  display: none !important;
+}
+
+/* HARD_GATE#842: composer reference layout */
+.composer {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 14px !important;
+}
+.composer .form-grid-composer,
+.composer .composer-col,
+.composer .composer-col-left,
+.composer .composer-col-right {
+  display: contents !important;
+}
+.composer-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px 12px;
+  border: 1px solid var(--border, rgba(0,0,0,.08));
+  border-radius: 12px;
+  background: var(--panel-2, rgba(255,255,255,.55));
+}
+.composer-block-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text, #1f2430);
+  letter-spacing: 0;
+}
+.composer-block-note {
+  margin: 0 !important;
+  color: var(--muted, #8b90a5);
+  font-size: 12px;
+}
+.composer-row {
+  display: grid !important;
+  gap: 12px !important;
+  align-items: end !important;
+}
+.composer-row-account {
+  grid-template-columns: minmax(0,0.85fr) minmax(0,0.95fr) minmax(0,0.95fr) auto !important;
+  align-items: end !important;
+}
+.composer-row-conn {
+  grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+}
+.composer-row .field {
+  min-width: 0 !important;
+  margin: 0 !important;
+}
+.composer-row .field > span {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted, #6b7285);
+}
+.composer-row .field .req {
+  color: #e5484d;
+  margin-left: 2px;
+}
+.composer-row .field input[type="text"],
+.composer-row .field input[type="password"],
+.composer-row .field input[type="number"] {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  height: 36px !important;
+  box-sizing: border-box !important;
+}
+.composer-row .field-row {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+.composer-row .field-row input {
+  flex: 1 1 auto !important;
+  width: auto !important;
+}
+.composer-row .unit {
+  flex: 0 0 auto;
+  color: var(--muted, #8b90a5);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.composer-row .seg {
+  display: inline-flex !important;
+  width: 100% !important;
+  min-height: 36px !important;
+}
+.composer-row .seg .seg-btn {
+  flex: 1 1 0 !important;
+  min-height: 34px !important;
+  height: 34px !important;
+  padding: 0 8px !important;
+  font-size: 12px !important;
+  white-space: nowrap !important;
+}
+.field-login-cta {
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: flex-end !important;
+  min-width: 0 !important;
+  width: auto !important;
+  max-width: none !important;
+}
+.login-cta-pair {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  gap: 8px !important;
+  width: auto !important;
+  max-width: none !important;
+}
+.field-login-cta .field-spacer {
+  display: block;
+  height: 18px;
+  margin-bottom: 6px;
+  line-height: 1;
+  opacity: 0;
+  user-select: none;
+}
+.btn-login-cta,
+#c-login.btn-login-cta,
+#c-login-sub.btn-login-cta {
+  height: 36px !important;
+  min-height: 36px !important;
+  padding: 0 10px !important;
+  white-space: nowrap !important;
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  flex: 0 0 auto !important;
+  box-sizing: border-box !important;
+  font-size: 12px !important;
+}
+.composer-desk-head {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 12px !important;
+}
+.composer-desk-title-wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.composer-desk-sub {
+  font-size: 12px;
+  color: var(--muted, #8b90a5);
+}
+.btn-desk-refresh,
+#c-desk-refresh {
+  height: 32px !important;
+  min-height: 32px !important;
+  padding: 0 12px !important;
+  font-size: 12px !important;
+  white-space: nowrap !important;
+}
+.composer-desk-panel,
+#c-desktop.composer-desk-panel {
+  border: 1px solid var(--border, rgba(0,0,0,.1)) !important;
+  border-radius: 10px !important;
+  background: var(--panel, #fff) !important;
+  overflow: hidden !important;
+  min-height: 180px !important;
+}
+#c-desktop.is-locked {
+  opacity: 1 !important;
+}
+#c-desktop.is-locked .desk-table tbody {
+  opacity: 0.95;
+}
+.desk-table-wrap {
+  width: 100%;
+  overflow: auto;
+  max-height: 280px;
+}
+.desk-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 13px;
+}
+.desk-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel-2, #f6f7fb);
+  color: var(--muted, #6b7285);
+  font-weight: 600;
+  font-size: 12px;
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border, rgba(0,0,0,.08));
+}
+.desk-table tbody td {
+  padding: 12px;
+  border-bottom: 1px solid var(--border, rgba(0,0,0,.06));
+  vertical-align: middle;
+  color: var(--text, #1f2430);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.desk-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.desk-table tbody tr.is-selected {
+  background: rgba(47, 107, 255, 0.06);
+}
+.desk-table .col-id { width: 16%; }
+.desk-table .col-name { width: 34%; }
+.desk-table .col-spec { width: 20%; }
+.desk-table .col-status { width: 14%; }
+.desk-table .col-act { width: 16%; text-align: center; }
+.desk-table .col-act { text-align: center; }
+.desk-table td.col-act { text-align: center; white-space: nowrap; }
+.desk-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 140px;
+  color: var(--muted, #8b90a5);
+  text-align: center;
+  white-space: normal !important;
+}
+.desk-empty-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-2, #5b6172);
+}
+.desk-empty-hint {
+  font-size: 12px;
+}
+.desk-select-btn {
+  height: 28px !important;
+  min-height: 28px !important;
+  padding: 0 10px !important;
+  font-size: 12px !important;
+  border-radius: 999px !important;
+}
+.desk-select-btn.is-active {
+  background: rgba(47, 107, 255, 0.12) !important;
+  color: #2f6bff !important;
+  border-color: rgba(47, 107, 255, 0.35) !important;
+}
+.composer-foot {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 12px !important;
+  margin-top: 2px !important;
+}
+.composer-actions {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  margin-left: auto !important;
+}
+@media (max-width: 1100px) {
+  .composer-row-account {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  .composer-row-conn {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  .field-login-cta { grid-column: 1 / -1; }
+  .field-login-cta .login-cta-pair { width: 100% !important; }
+  .field-login-cta .btn-login-cta { width: auto !important; flex: 1 1 auto !important; }
+}
+@media (max-width: 720px) {
+  .composer-row-account,
+  .composer-row-conn {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+
+/* ========== HARD_GATE#845 FINAL OVERRIDE: card+10% / log+10% / global run-log visible ========== */
+.card,
+.card[data-id],
+.card[data-pid],
+.account-card,
+.card.account-card,
+.cards .card {
+  min-height: 32em !important; /* was 30.8em -> #856d */
+}
+
+/* card keepalive log viewport only (NOT #global-log) */
+.card .log-box.log-viewport,
+.card .log-viewport[data-log],
+.card [data-log].log-box,
+.card [data-log].log-viewport,
+.card .card-surface-log .log-box,
+.card .card-surface-log-only .log-box,
+.card-log-expanded .log-box.log-viewport,
+.card-surface-dual .log-box.log-viewport {
+  flex: 0 1 auto !important;
+  height: auto !important;
+  min-height: 11.55em !important;
+  max-height: 18.15em !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain !important;
+  contain: none !important;
+  content-visibility: visible !important;
+}
+
+/* global run log: exclude from card log-viewport clamps; must show lines */
+#global-log,
+#global-log.log-box,
+#global-log.log-viewport,
+.global-log-panel #global-log,
+.global-log-panel .log-box,
+.global-log-panel .log-viewport {
+  display: block !important;
+  flex: none !important;
+  flex-grow: 0 !important;
+  flex-shrink: 0 !important;
+  height: auto !important;
+  min-height: 9em !important;
+  max-height: 280px !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain !important;
+  contain: none !important;
+  content-visibility: visible !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  white-space: normal !important;
+  padding: 6px 8px !important;
+  box-sizing: border-box !important;
+}
+.global-log-panel {
+  overflow: visible !important;
+  min-height: 0 !important;
+}
+.global-log-panel .log-line,
+#global-log .log-line {
+  display: flex !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  line-height: 1.4 !important;
+  color: var(--text) !important;
+}
+#global-log .log-line span,
+#global-log .log-text {
+  white-space: pre-wrap !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  color: inherit !important;
+}
+
+/* ========== HARD_GATE#846: desk cols 序号/名称/id/协议/操作 + card log flush bottom ========== */
+.desk-table th.col-idx,
+.desk-table td.col-idx {
+  width: 52px;
+  text-align: center;
+  white-space: nowrap;
+}
+.desk-table th.col-id,
+.desk-table td.col-id {
+  width: 110px;
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+.desk-table th.col-proto,
+.desk-table td.col-proto {
+  width: 128px;
+  word-break: break-all;
+}
+.desk-table th.col-name,
+.desk-table td.col-name {
+  width: auto;
+}
+.desk-table th.col-act,
+.desk-table td.col-act {
+  width: 88px;
+  text-align: center;
+}
+.desk-table th.col-spec,
+.desk-table td.col-spec,
+.desk-table th.col-status,
+.desk-table td.col-status {
+  display: none !important;
+}
+
+/* Card flex column: log surface sticks to bottom; bottom pad = .card-head top pad (12px) */
+.card,
+.card[data-id],
+.card[data-pid],
+.account-card,
+.card.account-card,
+.cards .card {
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 32em !important; /* was 30.8em -> #856d */
+  padding-bottom: 0 !important;
+}
+.card > .card-head,
+.card > .card-actions,
+.card > .card-error,
+.card > .card-summary,
+.card > .card-body {
+  flex: 0 0 auto;
+}
+.card > .card-surface-dual,
+.card > .card-surface-log-only,
+.card > .card-surface-log {
+  flex: 1 1 auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+  margin-top: auto !important;
+  margin-bottom: 0 !important;
+  padding-bottom: 12px !important; /* = .card-head padding-top */
+  box-sizing: border-box !important;
+}
+.card .card-surface-log-only .log-panel,
+.card .card-surface-dual .log-panel,
+.card .log-panel.card-log-expanded {
+  flex: 1 1 auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+  height: auto !important;
+  margin-bottom: 0 !important;
+}
+.card .card-surface-log-only .log-box,
+.card .card-surface-dual .log-box,
+.card .log-panel.card-log-expanded .log-box,
+.card .log-box.log-viewport {
+  flex: 1 1 auto !important;
+  min-height: 11.55em !important;
+  max-height: none !important;
+  margin-bottom: 0 !important;
+}
+
+/* ===== HARD_GATE#850: card log flush bottom; pad = card-head top (12px) ===== */
+.card,
+.card.account-card,
+.cards .card {
+  display: flex !important;
+  flex-direction: column !important;
+  padding-bottom: 0 !important;
+}
+.card > .card-surface-dual,
+.card > .card-surface-log-only,
+.card > .card-surface-log {
+  flex: 1 1 auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+  margin-top: auto !important;
+  margin-bottom: 0 !important;
+  padding-bottom: 12px !important; /* match .card-head padding-top */
+  padding-top: 0 !important;
+  box-sizing: border-box !important;
+}
+.card .log-panel,
+.card .card-surface-log-only .log-panel,
+.card .card-surface-dual .log-panel {
+  flex: 1 1 auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+  margin-bottom: 0 !important;
+  padding-bottom: 0 !important;
+}
+.card .log-box,
+.card .log-box.log-viewport,
+.card .card-surface-log-only .log-box,
+.card .card-surface-dual .log-box {
+  flex: 1 1 auto !important;
+  margin-bottom: 0 !important;
+  padding-bottom: 0 !important;
+}
+.card .log-toolbar {
+  margin-bottom: 0 !important;
+}
+
+/* ========== HARD_GATE#851: desk head full-width / no squeeze / fixed card height / log flush bottom ========== */
+.composer-block-desktops {
+  display: flex !important;
+  flex-direction: column !important;
+  min-width: 0 !important;
+  width: 100% !important;
+}
+.composer-desk-head {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 12px !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  box-sizing: border-box !important;
+  flex-wrap: nowrap !important;
+  overflow: visible !important;
+  padding: 0 0 8px 0 !important;
+}
+.composer-desk-title-wrap {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: baseline !important;
+  gap: 10px !important;
+  min-width: 0 !important;
+  flex: 1 1 auto !important;
+  overflow: hidden !important;
+}
+.composer-desk-title-wrap .composer-block-title {
+  flex: 0 0 auto !important;
+  white-space: nowrap !important;
+}
+.composer-desk-sub,
+#c-desktop-sub {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  font-size: 12px !important;
+  color: var(--muted, #8b90a5) !important;
+  letter-spacing: 0 !important;
+}
+.btn-desk-refresh,
+#c-desk-refresh {
+  flex: 0 0 auto !important;
+  white-space: nowrap !important;
+  min-height: 32px !important;
+  padding: 6px 14px !important;
+}
+.composer-desk-panel,
+#c-desktop {
+  width: 100% !important;
+  min-width: 0 !important;
+  box-sizing: border-box !important;
+  overflow-x: auto !important;
+}
+.composer-desk-panel .desk-table,
+#c-desktop .desk-table {
+  width: 100% !important;
+  min-width: 100% !important;
+  table-layout: fixed !important;
+  border-collapse: collapse !important;
+}
+.composer-desk-panel .desk-table thead th,
+#c-desktop .desk-table thead th {
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+/* Fixed card height — stop jump when logs empty/full */
+.card,
+.card.account-card,
+.cards .card {
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 32em !important;
+  height: 32em !important;
+  max-height: 32em !important;
+  padding-bottom: 0 !important;
+  box-sizing: border-box !important;
+  overflow: hidden !important;
+}
+.card > .card-head {
+  flex: 0 0 auto !important;
+}
+.card > .card-surface-dual,
+.card > .card-surface-log-only,
+.card > .card-surface-log {
+  flex: 1 1 auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+  margin-top: auto !important;
+  margin-bottom: 0 !important;
+  padding-bottom: 12px !important; /* = .card-head padding-top */
+  padding-top: 0 !important;
+  box-sizing: border-box !important;
+  justify-content: flex-end !important;
+}
+.card .log-panel,
+.card .card-surface-log-only .log-panel,
+.card .card-surface-dual .log-panel {
+  flex: 1 1 auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+  margin-bottom: 0 !important;
+  padding-bottom: 0 !important;
+  justify-content: flex-end !important;
+}
+.card .log-toolbar {
+  flex: 0 0 auto !important;
+  margin-bottom: 0 !important;
+}
+.card .log-box,
+.card .log-box.log-viewport,
+.card .card-surface-log-only .log-box,
+.card .card-surface-dual .log-box {
+  flex: 1 1 auto !important;
+  min-height: 11.55em !important;
+  max-height: 18.15em !important;
+  height: 18.15em !important;
+  margin-bottom: 0 !important;
+  padding-bottom: 0 !important;
+  box-sizing: border-box !important;
+}
+/* empty log still keeps viewport height so card does not shrink */
+.card .log-box:empty,
+.card .log-box .log-empty,
+.card .log-viewport:empty {
+  min-height: 18.15em !important;
+}
+
+/* ========== HARD_GATE#852: log flush bottom + desk head/table full columns ========== */
+.card,
+.card.account-card,
+.cards .card {
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 32em !important;
+  height: 32em !important;
+  max-height: 32em !important;
+  padding: 0 !important;
+  box-sizing: border-box !important;
+  overflow: hidden !important;
+}
+.card > .card-head {
+  flex: 0 0 auto !important;
+  padding: 12px 12px 8px !important; /* top gap reference */
+}
+.card > .card-surface-dual,
+.card > .card-surface-log-only,
+.card > .card-surface-log {
+  flex: 1 1 auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+  margin-top: auto !important;
+  margin-bottom: 0 !important;
+  padding: 0 12px 12px !important; /* bottom = card-head top */
+  box-sizing: border-box !important;
+  justify-content: flex-end !important;
+}
+.card .log-panel,
+.card .card-surface-log-only .log-panel,
+.card .card-surface-dual .log-panel {
+  flex: 1 1 auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  justify-content: flex-end !important;
+}
+.card .log-toolbar {
+  flex: 0 0 auto !important;
+  margin: 0 0 6px 0 !important;
+}
+.card .log-box,
+.card .log-box.log-viewport,
+.card .card-surface-log-only .log-box,
+.card .card-surface-dual .log-box {
+  flex: 0 0 auto !important;
+  min-height: 18.15em !important;
+  max-height: 18.15em !important;
+  height: 18.15em !important;
+  margin: 0 !important;
+  padding-bottom: 0 !important;
+  box-sizing: border-box !important;
+}
+.card .log-box:empty,
+.card .log-box .log-empty,
+.card .log-viewport:empty {
+  min-height: 18.15em !important;
+  height: 18.15em !important;
+}
+
+/* Composer desk head: title + sub not glued, full width */
+.composer-block-desktops {
+  display: flex !important;
+  flex-direction: column !important;
+  min-width: 0 !important;
+  width: 100% !important;
+  overflow: visible !important;
+}
+.composer-desk-head {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 16px !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  box-sizing: border-box !important;
+  flex-wrap: nowrap !important;
+  overflow: visible !important;
+  padding: 0 0 10px 0 !important;
+}
+.composer-desk-title-wrap {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: baseline !important;
+  gap: 12px !important;
+  min-width: 0 !important;
+  flex: 1 1 auto !important;
+  overflow: visible !important;
+}
+.composer-desk-title-wrap .composer-block-title {
+  flex: 0 0 auto !important;
+  white-space: nowrap !important;
+  overflow: visible !important;
+}
+.composer-desk-sub,
+#c-desktop-sub {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  font-size: 12px !important;
+  color: var(--muted, #8b90a5) !important;
+  letter-spacing: 0 !important;
+}
+.composer-desk-sub::before,
+#c-desktop-sub::before {
+  content: "·";
+  margin-right: 8px;
+  color: var(--muted, #8b90a5);
+}
+.btn-desk-refresh,
+#c-desk-refresh {
+  flex: 0 0 auto !important;
+  white-space: nowrap !important;
+  min-height: 32px !important;
+  padding: 6px 14px !important;
+}
+
+/* Desk table: show all 5 columns fully (序号/名称/ID/协议/操作) */
+.composer-desk-panel,
+#c-desktop {
+  width: 100% !important;
+  min-width: 0 !important;
+  box-sizing: border-box !important;
+  overflow: visible !important;
+}
+.composer-desk-panel .desk-table-wrap,
+#c-desktop .desk-table-wrap,
+.desk-table-wrap {
+  width: 100% !important;
+  max-width: 100% !important;
+  overflow-x: auto !important;
+  overflow-y: auto !important;
+  max-height: 280px !important;
+  box-sizing: border-box !important;
+}
+.desk-table,
+.composer-desk-panel .desk-table,
+#c-desktop .desk-table {
+  width: 100% !important;
+  min-width: 640px !important;
+  table-layout: fixed !important;
+  border-collapse: collapse !important;
+}
+.desk-table thead th,
+.composer-desk-panel .desk-table thead th,
+#c-desktop .desk-table thead th {
+  white-space: nowrap !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  padding: 10px 12px !important;
+  box-sizing: border-box !important;
+}
+/* unhide + width map for JS columns */
+.desk-table th.col-spec,
+.desk-table td.col-spec,
+.desk-table th.col-status,
+.desk-table td.col-status {
+  display: none !important; /* not used in #852 schema */
+}
+.desk-table th.col-idx,
+.desk-table td.col-idx {
+  width: 64px !important;
+  text-align: center !important;
+  white-space: nowrap !important;
+  display: table-cell !important;
+}
+.desk-table th.col-name,
+.desk-table td.col-name {
+  width: auto !important;
+  min-width: 160px !important;
+  display: table-cell !important;
+}
+.desk-table th.col-id,
+.desk-table td.col-id {
+  width: 120px !important;
+  font-variant-numeric: tabular-nums !important;
+  display: table-cell !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+.desk-table th.col-proto,
+.desk-table td.col-proto {
+  width: 160px !important;
+  display: table-cell !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+.desk-table th.col-act,
+.desk-table td.col-act {
+  width: 96px !important;
+  text-align: center !important;
+  display: table-cell !important;
+  white-space: nowrap !important;
+}
+
+
+/* ===== HARD_GATE#853: even desk columns + fixed empty log height + real clear ===== */
+.desk-table-wrap,
+.composer-block-desktops .desk-table-wrap,
+#c-desk-wrap {
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+}
+.desk-table,
+.composer-block-desktops .desk-table,
+#c-desk-table {
+  width: 100% !important;
+  table-layout: fixed !important;
+  border-collapse: collapse !important;
+}
+/* 5 columns evenly distributed: 序号 / 名称 / id / 协议 / 操作 */
+/* HARD_GATE#858: 序号10% / 名称30% / ID·协议·操作各20% — 非均分20% */
+.desk-table col.col-idx,
+.desk-table th.col-idx,
+.desk-table td.col-idx,
+.desk-table .col-idx {
+  width: 10% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  text-align: center !important;
+  display: table-cell !important;
+  box-sizing: border-box !important;
+}
+.desk-table col.col-name,
+.desk-table th.col-name,
+.desk-table td.col-name,
+.desk-table .col-name {
+  width: 30% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  text-align: left !important;
+  display: table-cell !important;
+  box-sizing: border-box !important;
+}
+.desk-table col.col-id,
+.desk-table th.col-id,
+.desk-table td.col-id,
+.desk-table .col-id {
+  width: 20% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  text-align: left !important;
+  display: table-cell !important;
+  box-sizing: border-box !important;
+  font-variant-numeric: tabular-nums !important;
+}
+.desk-table col.col-proto,
+.desk-table th.col-proto,
+.desk-table td.col-proto,
+.desk-table .col-proto {
+  width: 20% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  text-align: left !important;
+  display: table-cell !important;
+  box-sizing: border-box !important;
+}
+.desk-table col.col-act,
+.desk-table th.col-act,
+.desk-table td.col-act,
+.desk-table .col-act {
+  width: 20% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  text-align: center !important;
+  display: table-cell !important;
+  box-sizing: border-box !important;
+  white-space: nowrap !important;
+}
+.desk-table thead th,
+.desk-table tbody td {
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  padding-left: 10px !important;
+  padding-right: 10px !important;
+}
+.desk-table .col-spec,
+.desk-table .col-status,
+.desk-table th.col-spec,
+.desk-table td.col-spec,
+.desk-table th.col-status,
+.desk-table td.col-status {
+  display: none !important;
+  width: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+
+/* fixed card + log viewport: empty/clear must NOT shrink */
+.card,
+.card.account-card,
+.cards .card {
+  min-height: 32em !important;
+  height: 32em !important;
+  max-height: 32em !important;
+  display: flex !important;
+  flex-direction: column !important;
+  box-sizing: border-box !important;
+  overflow: hidden !important;
+}
+.card .card-surface-dual,
+.card .card-surface-log-only,
+.card .card-surface-log,
+.card > .card-surface-dual,
+.card > .card-surface-log-only {
+  flex: 1 1 auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+  margin-top: auto !important;
+}
+.card .log-viewport,
+.card .log-box,
+.card .card-log,
+.card .card-surface-dual .log-box,
+.card .card-surface-dual .log-viewport,
+.card .card-surface-log-only .log-box {
+  flex: 0 0 18.15em !important;
+  min-height: 18.15em !important;
+  height: 18.15em !important;
+  max-height: 18.15em !important;
+  box-sizing: border-box !important;
+  overflow: auto !important;
+  margin-bottom: 12px !important;
+}
+.card .log-empty-fill,
+.card .log-line-empty,
+.card .log-empty,
+.card .log-viewport .log-empty-fill,
+.card .log-box .log-empty-fill {
+  display: flex !important;
+  align-items: flex-start !important;
+  justify-content: flex-start !important;
+  min-height: 100% !important;
+  height: 100% !important;
+  max-height: none !important;
+  box-sizing: border-box !important;
+  padding: 8px 10px !important;
+  margin: 0 !important;
+  white-space: normal !important;
+}
+
+
+/* ========== HARD_GATE#854: lock card/log size to #852 (32em/18.15em); empty must not shrink ========== */
+.cards .card,
+#cards .card,
+.card-grid .card {
+  min-height: 32em !important;
+  height: 32em !important;
+  max-height: 32em !important;
+  box-sizing: border-box !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+.card .card-surface-dual,
+.card .card-surface-log-only,
+.card .card-surface-log,
+.card > .card-surface-dual,
+.card > .card-surface-log-only {
+  flex: 1 1 auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+  margin-top: auto !important;
+  margin-bottom: 0 !important;
+  padding-bottom: 0 !important;
+}
+.card .log-viewport,
+.card .log-box,
+.card .card-log,
+.card .card-surface-dual .log-box,
+.card .card-surface-dual .log-viewport,
+.card .card-surface-log-only .log-box,
+.card .card-surface-log-only .log-viewport,
+.card .card-surface-log .log-box,
+.card .card-surface-log .log-viewport {
+  flex: 0 0 18.15em !important;
+  flex-grow: 0 !important;
+  flex-shrink: 0 !important;
+  min-height: 18.15em !important;
+  height: 18.15em !important;
+  max-height: 18.15em !important;
+  box-sizing: border-box !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  margin-bottom: 12px !important; /* pad = title top gap */
+}
+/* kill any content-sized / 11.55em shrink rules for card logs */
+.card .log-viewport.log-empty,
+.card .log-box:empty,
+.card .log-viewport:has(.log-empty-fill),
+.card .log-viewport:has(.log-line-empty) {
+  min-height: 18.15em !important;
+  height: 18.15em !important;
+  max-height: 18.15em !important;
+}
+.card .log-empty-fill,
+.card .log-line-empty,
+.card .log-empty,
+.card .log-viewport .log-empty-fill,
+.card .log-box .log-empty-fill,
+.card .log-viewport .log-line-empty {
+  display: flex !important;
+  align-items: flex-start !important;
+  justify-content: flex-start !important;
+  min-height: 100% !important;
+  height: 100% !important;
+  max-height: none !important;
+  box-sizing: border-box !important;
+  padding: 8px 10px !important;
+  margin: 0 !important;
+  white-space: normal !important;
+}
+
+
+/* ========== HARD_GATE#855: beat (0,4,0) 11.55em; pin log bottom gap = title top 12px ========== */
+/* Real DOM: article.card > .card-surface.card-surface-dual.card-surface-log-only > actions + .log-panel > .log-box.log-viewport */
+
+.cards .card,
+#cards .card,
+.card-grid .card,
+article.card,
+.card.account-card {
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 32em !important;
+  height: 32em !important;
+  max-height: 32em !important;
+  padding: 0 !important;
+  box-sizing: border-box !important;
+  overflow: hidden !important;
+}
+
+.card > .card-head,
+article.card > .card-head {
+  flex: 0 0 auto !important;
+  padding: 12px 12px 8px !important; /* title top gap reference = 12px */
+}
+
+.card > .card-summary,
+article.card > .card-summary {
+  flex: 0 0 auto !important;
+}
+
+/* actual surface wrapper (not direct dual child) */
+.card > .card-surface,
+.card > .card-surface.card-surface-dual,
+.card > .card-surface.card-surface-log-only,
+.card > .card-surface.card-surface-dual.card-surface-log-only,
+article.card > .card-surface,
+article.card > .card-surface.card-surface-dual,
+article.card > .card-surface.card-surface-log-only {
+  flex: 1 1 auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 12px 12px !important; /* bottom pad = title top 12px */
+  box-sizing: border-box !important;
+  justify-content: flex-end !important;
+  gap: 0 !important;
+}
+
+.card > .card-surface > .card-actions,
+.card > .card-surface > .surface-actions,
+.card .card-surface .card-actions {
+  flex: 0 0 auto !important;
+  margin: 0 0 8px 0 !important;
+}
+
+.card > .card-surface > .log-panel,
+.card > .card-surface > .surface-log,
+.card .card-surface .log-panel,
+.card .card-surface-dual .log-panel,
+.card .card-surface-log-only .log-panel,
+.card .log-panel.card-log-expanded {
+  flex: 0 0 auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  justify-content: flex-end !important;
+  overflow: hidden !important;
+}
+
+/* beat .card .log-panel.card-log-expanded .log-box {min-height:11.55em; flex:1 1 auto} (0,4,0) */
+.card .log-panel.card-log-expanded .log-box,
+.card .log-panel.card-log-expanded .log-box.log-viewport,
+.card .log-panel .log-box.log-viewport,
+.card .log-panel.card-log-expanded .log-viewport,
+.card .card-surface .log-panel.card-log-expanded .log-box,
+.card .card-surface .log-panel.card-log-expanded .log-box.log-viewport,
+.card .card-surface .log-panel .log-box.log-viewport,
+.card .card-surface-dual .log-panel.card-log-expanded .log-box,
+.card .card-surface-log-only .log-panel.card-log-expanded .log-box,
+.card .card-surface-dual .log-box.log-viewport,
+.card .card-surface-log-only .log-box.log-viewport,
+.card .log-box.log-viewport,
+.card .log-viewport.log-box {
+  flex: 0 0 18.15em !important;
+  flex-grow: 0 !important;
+  flex-shrink: 0 !important;
+  min-height: 18.15em !important;
+  height: 18.15em !important;
+  max-height: 18.15em !important;
+  margin: 0 !important;
+  margin-bottom: 0 !important;
+  padding-bottom: 0 !important;
+  box-sizing: border-box !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+
+/* empty still same fixed height — no shrink */
+.card .log-panel.card-log-expanded .log-box:empty,
+.card .log-panel.card-log-expanded .log-box:has(.log-empty-fill),
+.card .log-panel.card-log-expanded .log-box:has(.log-line-empty),
+.card .log-box.log-viewport:empty,
+.card .log-box.log-viewport:has(.log-empty-fill),
+.card .log-box.log-viewport:has(.log-line-empty) {
+  flex: 0 0 18.15em !important;
+  min-height: 18.15em !important;
+  height: 18.15em !important;
+  max-height: 18.15em !important;
+}
+
+.card .log-empty-fill,
+.card .log-line-empty,
+.card .log-panel .log-empty-fill,
+.card .log-panel .log-line-empty {
+  display: flex !important;
+  align-items: flex-start !important;
+  justify-content: flex-start !important;
+  min-height: 100% !important;
+  height: 100% !important;
+  max-height: none !important;
+  box-sizing: border-box !important;
+  padding: 8px 10px !important;
+  margin: 0 !important;
+}
+
+/* ========== HARD_GATE#856: fit log panel INSIDE dual; bottom gap=title top 12px; no em-on-12px overflow ========== */
+/* Measured fail #855: log-box 18.15em @ font-size 12px => 217.8px; panel 250 > dual 218 => clip/overflow.
+   Fix: dual/panel/box flex-fill remaining surface; heights in px anchored to layout not log font-size.
+   Empty/clear keeps same box via flex parent chain + min-height px floor. */
+
+.cards .card,
+#cards .card,
+.card-grid .card,
+article.card,
+.card.account-card {
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 32em !important;
+  height: 32em !important;
+  max-height: 32em !important;
+  overflow: hidden !important;
+  box-sizing: border-box !important;
+}
+
+.card > .card-head,
+.card .card-head {
+  flex: 0 0 auto !important;
+  padding-top: 12px !important; /* title top gap reference */
+  padding-bottom: 8px !important;
+  box-sizing: border-box !important;
+}
+
+.card > .card-summary,
+.card .card-summary {
+  flex: 0 0 auto !important;
+}
+
+.card > .card-surface,
+.card .card-surface {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: flex-start !important;
+  overflow: hidden !important;
+  padding: 0 0 12px 0 !important; /* bottom gap == title top 12px */
+  margin: 0 !important;
+  box-sizing: border-box !important;
+  height: auto !important;
+  max-height: none !important;
+}
+
+.card .card-surface > .card-actions,
+.card .card-actions {
+  flex: 0 0 auto !important;
+  margin: 0 0 8px 0 !important;
+  padding-left: 12px !important;
+  padding-right: 12px !important;
+  box-sizing: border-box !important;
+}
+
+/* dual takes ALL remaining surface height under actions; never larger than parent */
+.card .card-surface > .card-surface-dual,
+.card .card-surface > .card-surface-log-only,
+.card .card-surface-dual.card-surface-log-only,
+.card .card-surface-dual,
+.card .card-surface-log-only {
+  flex: 1 1 auto !important;
+  flex-grow: 1 !important;
+  flex-shrink: 1 !important;
+  min-height: 0 !important;
+  height: auto !important;
+  max-height: none !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+  margin: 0 12px 0 12px !important;
+  padding: 0 !important;
+  box-sizing: border-box !important;
+  align-self: stretch !important;
+}
+
+/* panel fills dual exactly — no fixed height that can overflow card */
+.card .card-surface .log-panel,
+.card .card-surface-dual .log-panel,
+.card .card-surface-log-only .log-panel,
+.card .log-panel.surface-log,
+.card .log-panel.card-log-expanded,
+.card .log-panel {
+  flex: 1 1 auto !important;
+  flex-grow: 1 !important;
+  flex-shrink: 1 !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  box-sizing: border-box !important;
+  justify-content: flex-start !important;
+}
+
+.card .log-panel > .log-panel-head,
+.card .log-panel-head {
+  flex: 0 0 auto !important;
+  flex-grow: 0 !important;
+  flex-shrink: 0 !important;
+}
+
+/* beat HARD_GATE#855 18.15em @ 12px — use flex fill + px floor so clear won't collapse */
+.card .log-panel.card-log-expanded .log-box,
+.card .log-panel.card-log-expanded .log-box.log-viewport,
+.card .log-panel .log-box.log-viewport,
+.card .log-panel.card-log-expanded .log-viewport,
+.card .card-surface .log-panel.card-log-expanded .log-box,
+.card .card-surface .log-panel.card-log-expanded .log-box.log-viewport,
+.card .card-surface .log-panel .log-box.log-viewport,
+.card .card-surface-dual .log-panel.card-log-expanded .log-box,
+.card .card-surface-log-only .log-panel.card-log-expanded .log-box,
+.card .card-surface-dual .log-box.log-viewport,
+.card .card-surface-log-only .log-box.log-viewport,
+.card .log-box.log-viewport,
+.card .log-viewport.log-box,
+.card .log-box {
+  flex: 1 1 auto !important;
+  flex-grow: 1 !important;
+  flex-shrink: 1 !important;
+  /* floor ~ dual(218)-head(30) so empty/clear keeps prior visual mass; px not em */
+  min-height: 186px !important;
+  height: auto !important;
+  max-height: none !important;
+  margin: 0 !important;
+  padding: 6px 8px !important;
+  box-sizing: border-box !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  font-size: 12px !important;
+  line-height: 1.55 !important;
+}
+
+.card .log-panel.card-log-expanded .log-box:empty,
+.card .log-panel.card-log-expanded .log-box:has(.log-empty-fill),
+.card .log-panel.card-log-expanded .log-box:has(.log-line-empty),
+.card .log-box.log-viewport:empty,
+.card .log-box.log-viewport:has(.log-empty-fill),
+.card .log-box.log-viewport:has(.log-line-empty) {
+  flex: 1 1 auto !important;
+  min-height: 186px !important;
+  height: auto !important;
+  max-height: none !important;
+}
+
+.card .log-empty-fill,
+.card .log-line-empty,
+.card .log-panel .log-empty-fill,
+.card .log-panel .log-line-empty {
+  display: flex !important;
+  align-items: flex-start !important;
+  justify-content: flex-start !important;
+  min-height: 100% !important;
+  height: 100% !important;
+  max-height: none !important;
+  box-sizing: border-box !important;
+  margin: 0 !important;
+}
+
+/* ========== HARD_GATE#856b: densify card log lines so 6 full rows fit in 186px box ========== */
+/* Measured: injected/real wrap lines ~34.8px => only ~4 full rows in 186px (pad 6+6).
+   Target: line-h 28px * 6 = 168 + 12 pad = 180 <= 186; keep sticky box min-height. */
+.card .log-box.log-viewport,
+.card .log-panel .log-box,
+.card .card-surface-dual .log-box {
+  --log-line-h: 28px !important;
+  min-height: 186px !important;
+  height: 100% !important;
+  max-height: none !important;
+  padding: 6px 10px !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  box-sizing: border-box !important;
+}
+
+.card .log-box .log-line,
+.card .log-box .log-line.log-line-py,
+.card .log-box .log-line.log-line-card,
+.card .card-surface-dual .log-line,
+.card .log-panel .log-line {
+  display: block !important;
+  height: var(--log-line-h) !important;
+  min-height: var(--log-line-h) !important;
+  max-height: var(--log-line-h) !important;
+  line-height: var(--log-line-h) !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  box-sizing: border-box !important;
+}
+
+.card .log-box .log-line .log-text,
+.card .log-panel .log-line .log-text {
+  display: block !important;
+  height: var(--log-line-h) !important;
+  max-height: var(--log-line-h) !important;
+  line-height: var(--log-line-h) !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  word-break: normal !important;
+  overflow-wrap: normal !important;
+}
+
+/* empty fill still fills box but does not change outer height */
+.card .log-box .log-line.log-empty-fill,
+.card .log-box .log-line-empty {
+  height: 100% !important;
+  min-height: 100% !important;
+  max-height: none !important;
+  line-height: 1.45 !important;
+  white-space: normal !important;
+  padding: 8px 10px !important;
+  display: flex !important;
+  align-items: flex-start !important;
+}
+.card .log-box .log-line.log-empty-fill .log-text {
+  height: auto !important;
+  max-height: none !important;
+  line-height: 1.45 !important;
+  white-space: normal !important;
+}
+
+/* HARD_GATE#862: card-summary 2-row full text, width align log panel */
+/* Was #856c single-line ellipsis: 5 KPIs truncated on narrow cards. */
+/* pad L/R 24px = surface pad 12 + dual margin 12 → content width == log-panel */
+.card .card-summary,
+#cards .card .card-summary,
+.cards .card .card-summary {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  gap: 6px 10px !important;
+  padding: 0 24px 8px !important;
+  font-size: 12px !important;
+  line-height: 1.35 !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+  overflow: visible !important;
+}
+.card .card-summary > div,
+#cards .card .card-summary > div {
+  min-width: 0 !important;
+  overflow: visible !important;
+  white-space: normal !important;
+  text-overflow: clip !important;
+  word-break: break-word !important;
+}
+.card .card-summary strong,
+#cards .card .card-summary strong {
+  display: inline !important;
+  margin-top: 0 !important;
+  margin-left: 2px !important;
+  font-weight: 600 !important;
+  word-break: break-word !important;
+  white-space: normal !important;
+}
+.card .card-actions,
+#cards .card .card-actions,
+.cards .card .card-actions {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  gap: 6px !important;
+  margin-bottom: 6px !important;
+  align-items: center !important;
+}
+.card .card-actions .btn,
+#cards .card .card-actions .btn {
+  flex: 1 1 0 !important;
+  min-width: 0 !important;
+  padding: 6px 4px !important;
+  min-height: 32px !important;
+  font-size: 12px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+/* ========== HARD_GATE#856d: FORCE card tower 32em (kill 30.8em residual) ========== */
+html body .timeline article.card,
+html body .timeline .card,
+html body article.card.status-stopped,
+html body article.card.status-running,
+html body article.card.status-error,
+html body article.card.status-starting,
+html body article.card,
+html body .cards .card,
+html body #cards .card,
+html body .card.account-card,
+html body .account-card,
+html body .card[data-id],
+html body .card[data-pid] {
+  min-height: 32em !important;
+  height: 32em !important;
+  max-height: 32em !important;
+  box-sizing: border-box !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+html body .timeline {
+  min-height: 32em !important;
+}
+
+/* ========== HARD_GATE#862: card-summary 2-row full text (3+2), width align log ========== */
+/* Override #856e single-row 5-col ellipsis that truncated 云桌面/协议/客户端/模式/间隔 */
+/* pad L/R 24px = surface pad12 + dual margin12 → summary content width == log-panel */
+html body .timeline article.card .card-summary,
+html body .cards .card .card-summary,
+html body article.card .card-summary,
+.card-summary {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  grid-auto-flow: row !important;
+  grid-template-rows: auto auto !important;
+  gap: 6px 10px !important;
+  align-items: start !important;
+  padding: 0 24px 8px !important;
+  min-height: 0 !important;
+  height: auto !important;
+  max-height: none !important;
+  overflow: visible !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  font-size: 12px !important;
+  line-height: 1.35 !important;
+}
+html body .timeline article.card .card-summary > *,
+html body .cards .card .card-summary > *,
+html body article.card .card-summary > *,
+.card-summary > * {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  word-break: break-word !important;
+  line-height: 1.35 !important;
+  font-size: 12px !important;
+}
+html body .timeline article.card .card-summary strong,
+html body .cards .card .card-summary strong,
+html body article.card .card-summary strong,
+.card-summary strong {
+  display: inline !important;
+  white-space: normal !important;
+  word-break: break-word !important;
+  margin-left: 2px !important;
+  font-weight: 600 !important;
+}
+@media (max-width: 720px) {
+  html body .timeline article.card .card-summary,
+  html body .cards .card .card-summary,
+  .card-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 6px 8px !important;
+    font-size: 11px !important;
+  }
+}
+@media (max-width: 420px) {
+  html body .timeline article.card .card-summary,
+  html body .cards .card .card-summary,
+  .card-summary {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* ========== HARD_GATE#857: desk cols 10/30/20/20/20 + full log lines (no ellipsis half-hide) + multi-vp ========== */
+/* Desk: 序号10% 名称30% ID20% 协议20% 操作20% — kill equal-20% from #853 */
+.desk-table,
+.composer-block-desktops .desk-table,
+#c-desk-table,
+html body .desk-table {
+  width: 100% !important;
+  table-layout: fixed !important;
+  border-collapse: collapse !important;
+}
+.desk-table col.col-idx,
+.desk-table th.col-idx,
+.desk-table td.col-idx,
+.desk-table .col-idx,
+html body .desk-table .col-idx {
+  width: 10% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  text-align: center !important;
+  box-sizing: border-box !important;
+}
+.desk-table col.col-name,
+.desk-table th.col-name,
+.desk-table td.col-name,
+.desk-table .col-name,
+html body .desk-table .col-name {
+  width: 30% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  text-align: left !important;
+  box-sizing: border-box !important;
+}
+.desk-table col.col-id,
+.desk-table th.col-id,
+.desk-table td.col-id,
+.desk-table .col-id,
+html body .desk-table .col-id {
+  width: 20% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  text-align: left !important;
+  box-sizing: border-box !important;
+  font-variant-numeric: tabular-nums !important;
+}
+.desk-table col.col-proto,
+.desk-table th.col-proto,
+.desk-table td.col-proto,
+.desk-table .col-proto,
+html body .desk-table .col-proto {
+  width: 20% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  text-align: left !important;
+  box-sizing: border-box !important;
+}
+.desk-table col.col-act,
+.desk-table th.col-act,
+.desk-table td.col-act,
+.desk-table .col-act,
+html body .desk-table .col-act {
+  width: 20% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  text-align: center !important;
+  box-sizing: border-box !important;
+}
+/* name/id may wrap once if needed; avoid crushing header text */
+.desk-table thead th,
+.desk-table tbody td {
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  padding-left: 8px !important;
+  padding-right: 8px !important;
+  vertical-align: middle !important;
+}
+.desk-table thead th.col-name,
+.desk-table tbody td.col-name {
+  white-space: normal !important;
+  word-break: break-word !important;
+  text-overflow: clip !important;
+  line-height: 1.25 !important;
+}
+/* narrow viewports: horizontal scroll instead of crushing 5 cols */
+@media (max-width: 720px) {
+  .desk-table-wrap,
+  .composer-block-desktops .desk-table-wrap,
+  #c-desk-wrap {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+  }
+  .desk-table,
+  #c-desk-table {
+    min-width: 560px !important;
+  }
+}
+
+/* Card log lines: SHOW FULL TEXT — kill nowrap+ellipsis half-hide */
+html body .card .log-box .log-line,
+html body .card .log-viewport .log-line,
+html body article.card .log-line,
+html body .cards .card .log-line,
+.card .log-box .log-line,
+.card .log-viewport .log-line,
+.card .log-line,
+.log-box .log-line,
+.log-viewport .log-line,
+.log-line.log-line-py,
+.log-line {
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+  text-overflow: clip !important;
+  overflow: visible !important;
+  max-width: 100% !important;
+  height: auto !important;
+  max-height: none !important;
+  line-height: 1.35 !important;
+  display: block !important;
+  box-sizing: border-box !important;
+}
+/* keep viewport scrollable so wrapped full lines remain readable */
+html body .card .log-box,
+html body .card .log-viewport,
+.card .log-box,
+.card .log-viewport {
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+
+/* ========== HARD_GATE#857b: kill .log-text fixed-height nowrap+ellipsis (root cause) ========== */
+html body .card .log-box .log-line,
+html body .card .log-viewport .log-line,
+html body .card .log-panel .log-line,
+html body .card .log-box .log-line.log-line-py,
+html body .card .log-box .log-line.log-line-card,
+html body article.card .log-line,
+html body .cards .card .log-line,
+.card .log-box .log-line,
+.card .log-viewport .log-line,
+.card .log-panel .log-line,
+.card .log-box .log-line.log-line-py,
+.card .log-box .log-line.log-line-card,
+.card .log-line,
+.log-box .log-line,
+.log-viewport .log-line,
+.log-line.log-line-py,
+.log-line.log-line-card,
+.log-line {
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+  text-overflow: clip !important;
+  overflow: visible !important;
+  max-width: 100% !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  line-height: 1.35 !important;
+  display: block !important;
+  box-sizing: border-box !important;
+  padding: 2px 0 !important;
+  margin: 0 !important;
+}
+
+html body .card .log-box .log-line .log-text,
+html body .card .log-viewport .log-line .log-text,
+html body .card .log-panel .log-line .log-text,
+html body .card .log-line .log-text,
+html body article.card .log-text,
+html body .cards .card .log-text,
+.card .log-box .log-line .log-text,
+.card .log-viewport .log-line .log-text,
+.card .log-panel .log-line .log-text,
+.card .log-line .log-text,
+.card .log-text,
+.log-box .log-line .log-text,
+.log-viewport .log-line .log-text,
+.log-line .log-text,
+.log-text {
+  display: block !important;
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+  text-overflow: clip !important;
+  overflow: visible !important;
+  max-width: 100% !important;
+  width: 100% !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  line-height: 1.35 !important;
+  box-sizing: border-box !important;
+}
+
+/* keep fixed card shell, only log body scrolls with full wrapped lines */
+html body .card .log-box,
+html body .card .log-viewport,
+html body .card .log-panel .log-box,
+html body .card .log-panel .log-viewport,
+.card .log-box,
+.card .log-viewport,
+.card .log-panel .log-box,
+.card .log-panel .log-viewport {
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+
+/* HARD_GATE#860d: 居中表头 textGap 数学平衡
+   居中时 gapL≈idxW/2+nameW/2, gapR≈nameW/2+idW/2 → 须 idxW≈idW
+   序号=ID=14%，名称24%，协议18%，操作30%；thead 全居中；tbody 名称左齐 */
+html body #c-desktop .desk-table,
+html body .desk-table {
+  table-layout: fixed !important;
+  width: 100% !important;
+}
+html body #c-desktop .desk-table thead th,
+html body .desk-table thead th {
+  text-align: center !important;
+  padding: 10px 8px !important;
+  box-sizing: border-box !important;
+  vertical-align: middle !important;
+  white-space: nowrap !important;
+}
+html body #c-desktop .desk-table col.col-idx,
+html body #c-desktop .desk-table thead th.col-idx,
+html body #c-desktop .desk-table tbody td.col-idx,
+html body #c-desktop .desk-table .col-idx,
+html body .desk-table thead th.col-idx,
+html body .desk-table tbody td.col-idx {
+  width: 14% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  text-align: center !important;
+  padding: 10px 8px !important;
+  box-sizing: border-box !important;
+}
+html body #c-desktop .desk-table col.col-name,
+html body #c-desktop .desk-table thead th.col-name,
+html body #c-desktop .desk-table tbody td.col-name,
+html body #c-desktop .desk-table .col-name,
+html body .desk-table thead th.col-name,
+html body .desk-table tbody td.col-name {
+  width: 24% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  padding: 10px 8px !important;
+  border-left: 1px solid rgba(15, 23, 42, 0.08) !important;
+  box-sizing: border-box !important;
+}
+html body #c-desktop .desk-table thead th.col-name,
+html body .desk-table thead th.col-name {
+  text-align: center !important;
+}
+html body #c-desktop .desk-table tbody td.col-name,
+html body .desk-table tbody td.col-name {
+  text-align: left !important;
+}
+html body #c-desktop .desk-table col.col-id,
+html body #c-desktop .desk-table thead th.col-id,
+html body #c-desktop .desk-table tbody td.col-id,
+html body #c-desktop .desk-table .col-id,
+html body .desk-table thead th.col-id,
+html body .desk-table tbody td.col-id {
+  width: 14% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  text-align: center !important;
+  padding: 10px 8px !important;
+  box-sizing: border-box !important;
+}
+html body #c-desktop .desk-table col.col-proto,
+html body #c-desktop .desk-table thead th.col-proto,
+html body #c-desktop .desk-table tbody td.col-proto,
+html body #c-desktop .desk-table .col-proto,
+html body .desk-table thead th.col-proto,
+html body .desk-table tbody td.col-proto {
+  width: 18% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  text-align: center !important;
+  padding: 10px 8px !important;
+  box-sizing: border-box !important;
+}
+html body #c-desktop .desk-table col.col-act,
+html body #c-desktop .desk-table thead th.col-act,
+html body #c-desktop .desk-table tbody td.col-act,
+html body #c-desktop .desk-table .col-act,
+html body .desk-table thead th.col-act,
+html body .desk-table tbody td.col-act {
+  width: 30% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  text-align: center !important;
+  padding: 10px 8px !important;
+  box-sizing: border-box !important;
+}
+
+/* HARD_GATE#860b: 空表/新建表单视觉收紧 — 少空白、更贴内容 */
+html body #c-desktop .desk-empty,
+html body .desk-empty {
+  min-height: 96px !important;
+  max-height: none !important;
+  padding: 18px 16px !important;
+  margin: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  box-sizing: border-box !important;
+}
+html body #c-desktop .desk-empty p,
+html body .desk-empty p,
+html body #c-desktop .desk-empty .empty-hint,
+html body .desk-empty .empty-hint {
+  margin: 0 !important;
+  line-height: 1.45 !important;
+}
+html body #composer-form,
+html body .composer #composer-form,
+html body form#composer-form {
+  gap: 12px !important;
+}
+html body .composer-block {
+  gap: 8px !important;
+  padding: 12px 14px 10px !important;
+}
+html body .composer-row {
+  gap: 10px !important;
+}
+html body .composer-row .field > span {
+  margin-bottom: 4px !important;
+}
+html body .composer-row .field input[type="text"],
+html body .composer-row .field input[type="password"],
+html body .composer-row .field input[type="number"] {
+  height: 34px !important;
+}
+
+
+
+/* HARD_GATE#869: card-summary 6 KPIs — 3×2 left-aligned columns
+   DOM order: 云桌面/用户协议/客户端/模式/间隔/云桌面状态
+   → col1 云桌面↔模式 | col2 用户协议↔间隔 | col3 客户端↔云桌面状态 */
+html body .timeline article.card .card-summary,
+html body .cards .card .card-summary,
+html body article.card .card-summary,
+.card .card-summary,
+#cards .card .card-summary,
+.cards .card .card-summary,
+.card-summary {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  grid-auto-flow: row !important;
+  grid-template-rows: auto auto !important;
+  justify-content: start !important;
+  justify-items: start !important;
+  align-items: start !important;
+  text-align: left !important;
+  gap: 6px 10px !important;
+  /* keep #862 pad so content width tracks log panel */
+  padding: 0 24px 8px !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-height: 0 !important;
+  height: auto !important;
+  max-height: none !important;
+  overflow: visible !important;
+  font-size: 12px !important;
+  line-height: 1.35 !important;
+}
+html body .timeline article.card .card-summary > *,
+html body .cards .card .card-summary > *,
+html body article.card .card-summary > *,
+.card .card-summary > div,
+#cards .card .card-summary > div,
+.card-summary > * {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  width: 100% !important;
+  justify-self: start !important;
+  text-align: left !important;
+  box-sizing: border-box !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  word-break: break-word !important;
+  line-height: 1.35 !important;
+  font-size: 12px !important;
+}
+html body .timeline article.card .card-summary strong,
+html body .cards .card .card-summary strong,
+html body article.card .card-summary strong,
+.card-summary strong {
+  text-align: left !important;
+  display: inline !important;
+  white-space: normal !important;
+  word-break: break-word !important;
+  margin-left: 2px !important;
+  font-weight: 600 !important;
+}
+@media (max-width: 720px) {
+  html body .timeline article.card .card-summary,
+  html body .cards .card .card-summary,
+  html body article.card .card-summary,
+  .card .card-summary,
+  #cards .card .card-summary,
+  .card-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 6px 8px !important;
+    font-size: 11px !important;
+  }
+}
+@media (max-width: 420px) {
+  html body .timeline article.card .card-summary,
+  html body .cards .card .card-summary,
+  html body article.card .card-summary,
+  .card .card-summary,
+  #cards .card .card-summary,
+  .card-summary {
+    grid-template-columns: 1fr !important;
+  }
 }

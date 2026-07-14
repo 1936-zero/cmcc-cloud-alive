@@ -116,7 +116,13 @@ def profiles_dir() -> Path:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    # HARD_GATE#861: force Asia/Shanghai so API/orch timestamps match child short_time
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
+    except Exception:
+        return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
 # ---------------------------------------------------------------------------
@@ -220,13 +226,23 @@ def parse_job_timing_fields(body: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         duration = _parse_positive_int(body.get("durationSec"), "durationSec", allow_zero=True)
     else:
         duration = _DEFAULT_DURATION_SEC
+    # simple-keepalive argv (align Python menu): minutes + traffic seconds + mode
+    # mode "1"=单轮, "2"=永久. durationSec==0 => forever; >0 => single round.
+    interval_minutes = max(1, int(interval) // 60)
+    simple_mode = "2" if int(duration) == 0 else "1"
+    body_mode = str((body or {}).get("mode") or "").lower()
+    if body_mode in ("once", "single", "dry-run", "dryrun"):
+        simple_mode = "1"
+    elif body_mode in ("live", "forever", "permanent", "loop"):
+        if int(duration) == 0:
+            simple_mode = "2"
     extra_args = [
-        "--heartbeat-interval",
-        str(interval),
-        "--status-interval",
+        "--interval-minutes",
+        str(interval_minutes),
+        "--traffic-seconds",
         str(traffic),
-        "--duration",
-        str(duration),
+        "--mode",
+        simple_mode,
     ]
     return {
         "intervalSec": interval,
@@ -344,7 +360,7 @@ class FakeOrchestrator:
         state_path: Path,
         protocol: str = "ZTE",
         extra_args: Optional[List[str]] = None,
-        mode: str = "dry-run",
+        mode: str = "live",
         interval_sec: Optional[int] = None,
         traffic_sec: Optional[int] = None,
         duration_sec: Optional[int] = None,
@@ -363,7 +379,7 @@ class FakeOrchestrator:
                 "profileId": profile_id,
                 "statePath": str(state_path),
                 "protocol": protocol,
-                "mode": mode or "dry-run",
+                "mode": mode or "live",
                 "status": "running",
                 "pid": None,  # fake: no subprocess yet (J2)
                 "startedAt": _now_iso(),
@@ -461,6 +477,136 @@ def _profile_path(profile_id: str) -> Path:
     return profiles_dir() / f"{profile_id}.json"
 
 
+# HARD_GATE#868: same account shares one token/session state (like interactive).
+# Card profile JSON keeps UI meta + selected userServiceId; live child uses acct_*.json.
+_SHARED_ACCOUNT_KEYS = (
+    "username",
+    "password",
+    "passwordSavedAt",
+    "sohoToken",
+    "token",
+    "deviceId",
+    "device_id",
+    "clientProfile",
+    "clientId",
+    "lastLoginStatus",
+    "lastLoginAttemptAt",
+    "lastLoginError",
+)
+
+
+def _account_key(username: str) -> str:
+    return _safe_profile_id(username or "unknown")
+
+
+def _shared_account_path(username: str) -> Path:
+    return profiles_dir() / f"acct_{_account_key(username)}.json"
+
+
+def _is_shared_account_file(path: Path) -> bool:
+    return path.name.startswith("acct_") and path.suffix == ".json"
+
+
+def _sync_shared_account(state: Dict[str, Any]) -> Optional[Path]:
+    """Merge session fields into acct_<user>.json; return shared path or None.
+
+    HARD_GATE#868: same account shares one token. Stale per-card tokens must
+    NOT clobber a good shared token on start/hydrate. Token overwrite is only
+    allowed when the card just established a session (login path), or shared
+    has no token yet.
+    """
+    username = str(state.get("username") or state.get("phone") or "").strip()
+    if not username:
+        return None
+    shared = _shared_account_path(username)
+    existing = _read_state(shared) if shared.is_file() else {}
+    merged = dict(existing) if isinstance(existing, dict) else {}
+
+    token_keys = ("sohoToken", "token")
+    device_keys = ("deviceId", "device_id")
+
+    # Non-token shared keys: non-empty card value wins (except deviceId below).
+    for k in _SHARED_ACCOUNT_KEYS:
+        if k in token_keys or k in device_keys:
+            continue
+        if k in state and state.get(k) not in (None, ""):
+            merged[k] = state[k]
+
+    # deviceId: prefer stable shared value so dual cards don't mint two devices.
+    for dk in device_keys:
+        card_dev = state.get(dk)
+        shared_dev = merged.get(dk)
+        if shared_dev in (None, "") and card_dev not in (None, ""):
+            merged[dk] = card_dev
+        # else keep shared / existing
+
+    # Token policy: protect shared sohoToken from stale card overwrite.
+    status = str(state.get("lastLoginStatus") or "")
+    fresh_login = status in (
+        "session-established",
+        "session-present",
+        "live-ok-no-token",
+    )
+    for tk in token_keys:
+        card_tok = state.get(tk)
+        if card_tok in (None, ""):
+            continue
+        shared_tok = merged.get(tk)
+        if shared_tok in (None, "") or card_tok == shared_tok or fresh_login:
+            merged[tk] = card_tok
+        # else keep shared_tok (card is stale / partial)
+
+    # Prefer non-empty token from either side (fill holes only).
+    for tk in token_keys:
+        if not merged.get(tk) and state.get(tk):
+            merged[tk] = state[tk]
+
+    merged["username"] = username
+    merged["updatedAt"] = _now_iso()
+    merged["sharedAccount"] = True
+    _write_state(shared, merged)
+    return shared
+
+
+def _hydrate_profile_from_shared(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill missing token/password from shared account file (card keeps own usid)."""
+    username = str(state.get("username") or state.get("phone") or "").strip()
+    if not username:
+        return state
+    shared_path = _shared_account_path(username)
+    if not shared_path.is_file():
+        return state
+    shared = _read_state(shared_path)
+    if not shared:
+        return state
+    out = dict(state)
+    for k in _SHARED_ACCOUNT_KEYS:
+        if k in ("username",):
+            continue
+        if (not out.get(k)) and shared.get(k):
+            out[k] = shared[k]
+    return out
+
+
+def _resolve_live_state_path(profile_path: Path, state: Dict[str, Any]) -> Path:
+    """Path passed to child --state: shared acct file when username known."""
+    username = str(state.get("username") or state.get("phone") or "").strip()
+    if not username:
+        return profile_path
+    shared = _sync_shared_account(state)
+    return shared if shared is not None else profile_path
+
+
+def _card_user_service_id(state: Dict[str, Any]) -> str:
+    usid = (
+        state.get("userServiceId")
+        or state.get("selectedUserServiceId")
+        or state.get("user_service_id")
+        or ""
+    )
+    return str(usid) if usid else ""
+
+
 def _read_state(path: Path) -> Dict[str, Any]:
     if not path.is_file():
         return {}
@@ -502,7 +648,10 @@ def _public_profile(profile_id: str, state: Dict[str, Any], path: Path) -> Dict[
         "lastOfficialProtocol": official,
         "hasPassword": bool(state.get("password")),
         "tokenPresent": bool(state.get("sohoToken") or state.get("token")),
+        "isSubAccount": bool(state.get("isSubAccount")),
+        "loginMode": state.get("loginMode") or ("sub" if state.get("isSubAccount") else "main"),
         "clientProfile": state.get("clientProfile") or "linux",
+        "draft": bool(state.get("draft")),
         "jobStatus": job_status,
         "jobId": st.get("jobId"),
         "statePath": str(path),
@@ -514,13 +663,34 @@ def _public_profile(profile_id: str, state: Dict[str, Any], path: Path) -> Dict[
     }
 
 
-def list_profiles() -> List[Dict[str, Any]]:
+def list_profiles(include_draft: bool = False) -> List[Dict[str, Any]]:
+    """List profiles. Login-only draft profiles are hidden until save-and-keepalive.
+
+    HARD_GATE#868: skip shared acct_*.json (token store only, not UI cards).
+    """
     out: List[Dict[str, Any]] = []
     for p in sorted(profiles_dir().glob("*.json")):
+        if _is_shared_account_file(p):
+            continue
         pid = p.stem
         st = _read_state(p)
+        if not include_draft and bool(st.get("draft")):
+            continue
+        # surface tokenPresent from shared account when card file lacks token
+        st = _hydrate_profile_from_shared(st)
         out.append(_public_profile(pid, st, p))
     return out
+
+
+
+def _commit_profile_draft(path: Path, state: Dict[str, Any]) -> Dict[str, Any]:
+    """Clear draft flag so profile appears in timeline (save-and-keepalive)."""
+    if state.get("draft"):
+        state = dict(state)
+        state.pop("draft", None)
+        state["updatedAt"] = _now_iso()
+        _write_state(path, state)
+    return state
 
 
 # ---------------------------------------------------------------------------
@@ -583,6 +753,9 @@ async def profiles_create(request: Request) -> JSONResponse:
         "createdAt": _now_iso(),
         "updatedAt": _now_iso(),
     }
+    # HARD_GATE#850: login-only create stays draft; hidden from timeline until save.
+    if body.get("draft") is True or str(body.get("draft") or "").lower() in ("1", "true", "yes"):
+        state["draft"] = True
     if password:
         state["password"] = str(password)
         state["passwordSavedAt"] = _now_iso()
@@ -663,11 +836,18 @@ async def profiles_delete(request: Request) -> JSONResponse:
     )
 
 
-def _password_login_for_profile(path: Path, username: str, password: str) -> Dict[str, Any]:
-    """Thin wrapper: auth.password_login writes sohoToken into profile state JSON."""
-    from cmcc_cloud_alive.auth import password_login
+def _password_login_for_profile(
+    path: Path, username: str, password: str, mode: str = "main"
+) -> Dict[str, Any]:
+    """Thin wrapper: main/sub password login writes sohoToken into profile state JSON."""
+    from cmcc_cloud_alive.auth import password_login, sub_password_login
 
-    return password_login(
+    login_fn = (
+        sub_password_login
+        if str(mode).lower() in ("sub", "subaccount", "1", "true")
+        else password_login
+    )
+    return login_fn(
         username,
         password,
         state_path=str(path),
@@ -713,6 +893,17 @@ async def profiles_login(request: Request) -> JSONResponse:
     if body.get("username"):
         state["username"] = str(body["username"]).strip()
         username = state["username"]
+    # main/sub account login mode (composer dual buttons)
+    raw_mode = body.get("mode")
+    if raw_mode is None and "isSubAccount" in body:
+        raw_mode = "sub" if body.get("isSubAccount") else "main"
+    login_mode = (
+        "sub"
+        if str(raw_mode or "main").lower() in ("sub", "subaccount", "1", "true")
+        else "main"
+    )
+    state["loginMode"] = login_mode
+    state["isSubAccount"] = login_mode == "sub"
     if not username and not (state.get("sohoToken") or state.get("token")):
         return api_error(
             "VALIDATION",
@@ -737,6 +928,10 @@ async def profiles_login(request: Request) -> JSONResponse:
             "session-present" if token_present else "credentials-saved-no-session"
         )
         _write_state(path, state)
+        try:
+            _sync_shared_account(state)
+        except Exception:
+            pass
         pub = _public_profile(pid, state, path)
         return JSONResponse(
             {
@@ -762,6 +957,10 @@ async def profiles_login(request: Request) -> JSONResponse:
         if token_present:
             state["lastLoginStatus"] = "session-present"
             _write_state(path, state)
+            try:
+                _sync_shared_account(state)
+            except Exception:
+                pass
             pub = _public_profile(pid, state, path)
             return JSONResponse(
                 {
@@ -790,7 +989,7 @@ async def profiles_login(request: Request) -> JSONResponse:
     _write_state(path, state)
 
     try:
-        await asyncio.to_thread(_password_login_for_profile, path, username, str(password))
+        await asyncio.to_thread(_password_login_for_profile, path, username, str(password), login_mode)
     except Exception as e:
         msg = str(e) or e.__class__.__name__
         code_name = "UPSTREAM"
@@ -861,6 +1060,11 @@ async def profiles_login(request: Request) -> JSONResponse:
     state["lastLoginError"] = ""
     state["updatedAt"] = _now_iso()
     _write_state(path, state)
+    # HARD_GATE#868: same account shares one token store (acct_<user>.json)
+    try:
+        _sync_shared_account(state)
+    except Exception:
+        pass
     pub = _public_profile(pid, state, path)
     return JSONResponse(
         {
@@ -907,13 +1111,21 @@ def _desktop_from_cloud(item: Any) -> Optional[Dict[str, Any]]:
     vm_name = item.get("vmName") or item.get("desktopName") or item.get("name") or ""
     sku = item.get("skuName") or ""
     vm_status_show = item.get("vmStatusShow") or item.get("statusShow") or ""
+    # HARD_GATE#850: name = skuName (python CLI: 家庭云电脑高级版), fallback vmName
+    sku_s = str(sku) if sku is not None else ""
+    vm_s = str(vm_name) if vm_name is not None else ""
+    desk_label = sku_s or vm_s or usid
     dto: Dict[str, Any] = {
         "userServiceId": usid,
-        "vmName": str(vm_name) if vm_name is not None else "",
+        "vmName": vm_s,
         "spuCode": spu,
-        "skuName": str(sku) if sku is not None else "",
+        "skuName": sku_s,
+        "desktopLabel": desk_label,
+        "name": desk_label,
+        "label": desk_label,
         "vmStatus": item.get("vmStatus"),
         "vmStatusShow": str(vm_status_show) if vm_status_show is not None else "",
+        "statusName": str(vm_status_show) if vm_status_show is not None else "",
     }
     hint = _spu_protocol_hint(spu)
     if hint:
@@ -940,8 +1152,11 @@ def _desktops_shape_fixture() -> List[Dict[str, Any]]:
             "vmName": "fixture-sc",
             "spuCode": "sc-cloud-pc",
             "skuName": "fixture",
+            "desktopLabel": "fixture",
+            "name": "fixture",
             "vmStatus": 1,
             "vmStatusShow": "运行中",
+            "statusName": "运行中",
             "protocolHint": "SCG",
         },
         {
@@ -1101,9 +1316,31 @@ async def profiles_select_desktop(request: Request) -> JSONResponse:
     if official:
         state["lastOfficialProtocol"] = official
         state["protocolHint"] = official
+    # HARD_GATE#851: keep draft; only save-and-start commits to timeline
     state["updatedAt"] = _now_iso()
     _write_state(path, state)
     return JSONResponse({"ok": True, "profile": _public_profile(pid, state, path)})
+
+
+
+def resolve_user_protocol(body_protocol=None, state=None, fallback="ZTE"):
+    """HARD_GATE#871c: body → profile fields → historical empty fallback. Never force SCG."""
+    candidates = []
+    if body_protocol:
+        candidates.append(body_protocol)
+    st = state or {}
+    for k in ("protocol", "lastOfficialProtocol", "protocolHint", "last_protocol"):
+        if st.get(k):
+            candidates.append(st.get(k))
+    for v in candidates:
+        u = str(v or "").strip().upper()
+        if u in ("ZX", "ZHONGXING"):
+            u = "ZTE"
+        if u == "SANGFOR":
+            u = "SCG"
+        if u in ("ZTE", "SCG"):
+            return u
+    return str(fallback or "ZTE").upper()
 
 
 async def profiles_start_job(request: Request) -> JSONResponse:
@@ -1117,28 +1354,52 @@ async def profiles_start_job(request: Request) -> JSONResponse:
         body = {}
     if not isinstance(body, dict):
         body = {}
-    protocol = (body.get("protocol") or "ZTE").upper()
-    mode = body.get("mode") or "dry-run"
+    mode = body.get("mode") or "live"
     try:
         timing = parse_job_timing_fields(body)
     except ValueError as e:
         return api_error("VALIDATION", str(e))
+    # HARD_GATE#850: save-and-keepalive commits draft into timeline
+    state = _read_state(path)
+    # HARD_GATE#871c: user protocol choice — body → profile → ZTE empty-only
+    protocol = resolve_user_protocol(body.get("protocol"), state)
+    if state.get("draft"):
+        state.pop("draft", None)
+        state["updatedAt"] = _now_iso()
+        _write_state(path, state)
+    # HARD_GATE#868: card keeps UI meta; live child uses shared acct_*.json token
+    # and --user-service-id from THIS card (not from shared, avoids dual-card race).
+    usid = (
+        state.get("userServiceId")
+        or state.get("selectedUserServiceId")
+        or state.get("user_service_id")
+        or ""
+    )
+    live_path = _resolve_live_state_path(path, state)
+    # ensure shared has latest credentials/token before spawn
+    try:
+        _sync_shared_account(state)
+        live_path = _resolve_live_state_path(path, state)
+    except Exception:
+        pass
     try:
         job = ORCH.start_job(
             pid,
-            path,
+            live_path,
             protocol=protocol,
             mode=mode,
             extra_args=timing["extraArgs"],
             interval_sec=timing["intervalSec"],
             traffic_sec=timing["trafficSec"],
             duration_sec=timing["durationSec"],
+            user_service_id=str(usid) if usid else None,
         )
     except TypeError:
         # older orchestrator signature: pass extra_args only, merge fields on response
         try:
             job = ORCH.start_job(
-                pid, path, protocol=protocol, mode=mode, extra_args=timing["extraArgs"]
+                pid, live_path, protocol=protocol, mode=mode, extra_args=timing["extraArgs"],
+                user_service_id=str(usid) if usid else None,
             )
             job = dict(job)
             job["intervalSec"] = timing["intervalSec"]
@@ -1182,6 +1443,24 @@ async def profiles_logs(request: Request) -> JSONResponse:
     # ensure redaction of any accidental secrets in lines
     safe = [{"at": x.get("at"), "line": str(x.get("line", ""))[:2000]} for x in lines]
     return JSONResponse({"ok": True, "profileId": pid, "lines": safe})
+
+
+async def profiles_logs_clear(request: Request) -> JSONResponse:
+    """HARD_GATE#853: clear backend log buffer for a profile/card."""
+    pid = request.path_params["profile_id"]
+    path = _profile_path(pid)
+    if not path.is_file():
+        return api_error("NOT_FOUND", f"profile {pid} not found", 404)
+    result = ORCH.clear_logs(profile_id=pid)
+    return JSONResponse(
+        {
+            "ok": True,
+            "profileId": pid,
+            "cleared": int((result or {}).get("cleared") or 0),
+            "jobId": (result or {}).get("jobId"),
+            "lines": [],
+        }
+    )
 
 
 async def profiles_events(request: Request) -> StreamingResponse:
@@ -1289,8 +1568,9 @@ async def jobs_create(request: Request) -> JSONResponse:
     path = _profile_path(str(pid))
     if not path.is_file():
         return api_error("NOT_FOUND", f"profile {pid} not found", 404)
-    protocol = (body.get("protocol") or "ZTE").upper()
-    mode = body.get("mode") or "dry-run"
+    state = _read_state(path)
+    protocol = resolve_user_protocol((body or {}).get("protocol"), state)
+    mode = body.get("mode") or "live"
     try:
         timing = parse_job_timing_fields(body if isinstance(body, dict) else {})
     except ValueError as e:
@@ -1410,7 +1690,14 @@ async def logs_global(request: Request) -> JSONResponse:
 async def index(request: Request) -> Response:
     index_path = _STATIC_DIR / "index.html"
     if index_path.is_file():
-        return FileResponse(index_path)
+        # HARD_GATE#844: bust stale CSS/JS after layout hotfixes
+        return FileResponse(
+            index_path,
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+            },
+        )
     return JSONResponse({"ok": True, "message": "static shell missing", "api": "/api/system/health"})
 
 
@@ -1439,6 +1726,7 @@ routes = [
     Route("/api/profiles/{profile_id}/jobs", endpoint=profiles_start_job, methods=["POST"]),
     Route("/api/profiles/{profile_id}/jobs/current", endpoint=profiles_stop_job, methods=["DELETE"]),
     Route("/api/profiles/{profile_id}/logs", endpoint=profiles_logs, methods=["GET"]),
+    Route("/api/profiles/{profile_id}/logs", endpoint=profiles_logs_clear, methods=["DELETE"]),
     Route("/api/profiles/{profile_id}/events", endpoint=profiles_events, methods=["GET"]),
     # Global SSE for FE EventSource("/api/events") — X7
     Route("/api/events", endpoint=events_global, methods=["GET"]),

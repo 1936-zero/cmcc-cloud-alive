@@ -2528,6 +2528,15 @@ def _safe_profile_name(value):
     return "".join(safe).strip(".-_")[:60]
 
 
+def _state_is_sub_account(state):
+    """Whether a profile/state was last logged in as a sub-account."""
+    if not isinstance(state, dict):
+        return False
+    if state.get("isSubAccount") is True:
+        return True
+    return str(state.get("loginMode") or "").strip().lower() == "sub_password"
+
+
 def _state_label(path):
     try:
         state = core.load_state(str(path))
@@ -2535,7 +2544,8 @@ def _state_label(path):
         state = {}
     parts = []
     if state.get("username"):
-        parts.append(str(state.get("username")))
+        kind = "子账号" if _state_is_sub_account(state) else "主账号"
+        parts.append(f"{state.get('username')}({kind})")
     desktop = state.get("desktopName") or state.get("selectedDesktopName") or state.get("cloudPcName")
     if desktop:
         parts.append(str(desktop))
@@ -2966,17 +2976,35 @@ def cmd_simple_repl(args):
             active_state, existing_profile = _choose_state_profile(args)
             state = core.load_state(active_state)
             cached_username = state.get("username") or ""
+            # Existing profile already knows main/sub; only new profiles ask.
             if existing_profile and cached_username:
+                is_sub_login = _state_is_sub_account(state)
+                account_label = "子账号" if is_sub_login else "主账号"
                 username = cached_username
-                print(f"使用档案账号：{username}", flush=True)
+                print(f"沿用档案{account_label}：{username}", flush=True)
             else:
-                username = _choose_username_with_cached(cached_username, _simple_input)
+                print("\n请选择登录方式：", flush=True)
+                print("1. 主账号登录", flush=True)
+                print("2. 子账号登录", flush=True)
+                login_mode_pick = _simple_choice("登录方式", choices=("1", "2"), default="1")
+                is_sub_login = login_mode_pick == "2"
+                account_label = "子账号" if is_sub_login else "主账号"
+                if cached_username and (_state_is_sub_account(state) == is_sub_login):
+                    username = _choose_username_with_cached(cached_username, _simple_input)
+                else:
+                    username = _simple_input(account_label)
             if not username:
-                print("账号不能为空。", flush=True)
+                print(f"{account_label}不能为空。", flush=True)
                 continue
-            cached_password = state.get("password") if username == cached_username else ""
+            same_login_mode = (
+                bool(cached_username)
+                and username == cached_username
+                and (_state_is_sub_account(state) == is_sub_login)
+            )
+            cached_password = state.get("password") if same_login_mode else ""
             login_required = True
-            if existing_profile and username == cached_username:
+            password = ""
+            if existing_profile and same_login_mode:
                 valid_token, token_response = token.check_token(active_state)
                 if valid_token:
                     login_required = False
@@ -2988,7 +3016,7 @@ def cmd_simple_repl(args):
                 else:
                     password = _simple_input("请输入密码")
             elif cached_password:
-                print("检测到该账号已缓存密码，回车可直接使用缓存密码。", flush=True)
+                print(f"检测到该{account_label}已缓存密码，回车可直接使用缓存密码。", flush=True)
                 password = _simple_input("请输入密码", default="使用缓存密码")
                 if password == "使用缓存密码":
                     password = cached_password
@@ -2998,8 +3026,11 @@ def cmd_simple_repl(args):
                 if not password:
                     print("密码不能为空。", flush=True)
                     continue
-                print("正在登录...", flush=True)
-                auth.password_login(username, password, active_state, save_password=True)
+                print(f"正在以{account_label}登录...", flush=True)
+                if is_sub_login:
+                    auth.sub_password_login(username, password, active_state, save_password=True)
+                else:
+                    auth.password_login(username, password, active_state, save_password=True)
                 print("登录成功。", flush=True)
             items = cloud.list_desktops(active_state)
             if not items:

@@ -3,18 +3,19 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>移动云电脑保活工具</title>
+  <title>爱家移动云电脑</title>
   <meta name="color-scheme" content="light" />
-  <link rel="stylesheet" href="/static/app.css" />
+  <link rel="icon" type="image/png" href="/static/logo.png?v=869a" />
+  <link rel="stylesheet" href="/static/app.css?v=871d-dual" />
 </head>
 <body>
   <div class="app" id="app">
     <header class="topbar">
       <div class="brand">
-        <div class="brand-mark" aria-hidden="true"></div>
+        <img class="brand-mark" src="/static/logo.png?v=869a" width="34" height="34" alt="爱家移动云电脑" />
         <div class="brand-text">
-          <h1>移动云电脑保活</h1>
-          <p class="brand-sub">管理台 · 关掉页面保活仍在后台运行</p>
+          <h1>爱家移动云电脑</h1>
+          <p class="brand-sub">云电脑保活管理台 · 关掉页面仍在后台运行</p>
         </div>
       </div>
       <div class="top-stats" id="top-stats" aria-live="polite">
@@ -33,86 +34,116 @@
       <section class="composer" id="composer" aria-label="新建账号并开始保活">
         <div class="composer-head">
           <h2>新建账号</h2>
-          <p class="hint">一次填全配置；可先「登录」拉取云桌面，或直接「保存并保活」。</p>
+          <p class="hint">新增账号一次性全配置，可用于登录、拉取云桌面或保存到列表。</p>
         </div>
         <form id="composer-form" autocomplete="off" novalidate>
-          <div class="form-grid form-grid-composer">
-            <div class="composer-col composer-col-left">
-              <!-- HARD_GATE#803: left = short creds + login + large desktop; hold #784/#781 -->
-              <label class="field field-compact">
-                <span>账号 <em>*</em></span>
-                <input type="text" name="username" id="c-username" placeholder="移动云账号" required />
-              </label>
-              <div class="field field-compact login-after-pwd" role="group" aria-label="密码与登录">
-                <span>密码 <em>*</em></span>
-                <div class="field-row">
-                  <input type="text" autocomplete="new-password" name="password" id="c-password" placeholder="登录密码" required />
-                  <button type="button" class="btn btn-secondary btn-login" id="c-login">登录</button>
-                </div>
-                <p class="field-note">登录后拉取官方云桌面列表；与「保存并保活」不同</p>
-              </div>
-              <label class="field desktop-field desktop-field-lg">
-                <span>云桌面列表</span>
-                <div class="desk-seg-wrap">
-                  <div class="desk-seg is-empty desk-seg-refresh" id="c-desktop" data-locked="1" aria-disabled="true">
-                    <button type="button" class="desk-refresh-cta" data-act="composer-desktops" title="点击此处刷新云桌面列表" aria-label="点击此处刷新云桌面列表" disabled>点击此处刷新云桌面列表</button>
-                  </div>
-                </div>
-                <input type="hidden" id="c-userServiceId" value="" />
-                <input type="hidden" id="c-desktopLabel" value="" />
-                <p class="field-note" id="c-desktop-note">登录成功后展示官方 list_clouds（名称 / id | spuCode：xxx）</p>
-              </label>
-            </div>
-            <div class="composer-col composer-col-right">
-              <!-- HARD_GATE#803: displayName right, beside interval/traffic -->
-              <label class="field field-compact">
+          <!-- HARD_GATE#842: reference layout — 账号信息 / 连接配置 / 云桌面表格 -->
+          <section class="composer-block" aria-label="账号信息">
+            <div class="composer-block-title">账号信息</div>
+            <div class="composer-row composer-row-account">
+              <label class="field">
                 <span>显示名</span>
                 <input type="text" name="displayName" id="c-displayName" placeholder="可选，默认用账号" />
               </label>
-              <div class="form-pair span-2" role="group" aria-label="保活间隔 / 单次流量持续">
-                <label class="field">
-                  <span>保活间隔</span>
-                  <div class="field-row">
-                    <input type="number" name="intervalMin" id="c-intervalMin" min="1" max="1440" value="5" />
-                    <span class="unit">分钟</span>
-                  </div>
-                </label>
-                <label class="field">
-                  <span>单次流量持续</span>
-                  <div class="field-row">
-                    <input type="number" name="trafficSec" id="c-trafficSec" min="10" max="3600" value="60" />
-                    <span class="unit">秒</span>
-                  </div>
-                </label>
-              </div>
-              <div class="form-bottom-3 span-2" role="group" aria-label="客户端 / 模式 / 用户协议">
-                <label class="field">
-                  <span>客户端类型</span>
-                  <div class="seg" role="group" aria-label="客户端类型">
-                    <button type="button" class="seg-btn active" data-client="linux">Linux</button>
-                    <button type="button" class="seg-btn" data-client="windows">Windows</button>
-                    <button type="button" class="seg-btn" data-client="mac">Mac</button>
-                  </div>
-                  <p class="field-note">模拟哪端官方客户端登录（一般保持 Linux）</p>
-                </label>
-                <label class="field">
-                  <span>模式</span>
-                  <div class="seg" role="group" aria-label="模式">
-                    <button type="button" class="seg-btn active" data-mode="live">永久</button>
-                    <button type="button" class="seg-btn" data-mode="dry-run">单轮</button>
-                  </div>
-                </label>
-                <label class="field">
-                  <span>用户协议选择</span>
-                  <div class="seg" role="group" aria-label="用户协议选择">
-                    <button type="button" class="seg-btn active" data-protocol="ZTE">中兴</button>
-                    <button type="button" class="seg-btn" data-protocol="SCG">深信服</button>
-                  </div>
-                  <p class="field-note">仅作保活启动参数；卡面「用户协议」显示此处选择</p>
-                </label>
+              <label class="field">
+                <span>账号<span class="req">*</span></span>
+                <input type="text" name="username" id="c-username" placeholder="移动云账号" required autocomplete="username" />
+              </label>
+              <label class="field">
+                <span>密码<span class="req">*</span></span>
+                <input type="text" name="password" id="c-password" placeholder="登录密码" required autocomplete="current-password" />
+              </label>
+              <div class="field field-login-cta">
+                <span class="field-spacer" aria-hidden="true">&nbsp;</span>
+                <div class="login-cta-pair">
+                  <button type="button" class="btn btn-primary btn-login-cta" id="c-login" title="主帐号登录并加载官方云桌面列表（不启动保活）">主帐号获取云桌面</button>
+                  <button type="button" class="btn btn-secondary btn-login-cta" id="c-login-sub" title="子帐号登录并加载官方云桌面列表（不启动保活）">子帐号获取云桌面</button>
+                </div>
               </div>
             </div>
-          </div>
+            <p class="field-note composer-block-note">登录后自动获取云桌面列表；与「保存并保活」不同</p>
+          </section>
+
+          <section class="composer-block" aria-label="连接配置">
+            <div class="composer-block-title">连接配置</div>
+            <div class="composer-row composer-row-conn">
+              <label class="field">
+                <span>客户端类型</span>
+                <div class="seg" role="group" aria-label="客户端类型">
+                  <button type="button" class="seg-btn active" data-client="linux">Linux</button>
+                  <button type="button" class="seg-btn" data-client="windows">Windows</button>
+                  <button type="button" class="seg-btn" data-client="mac">Mac</button>
+                </div>
+              </label>
+              <label class="field">
+                <span>模式</span>
+                <div class="seg" role="group" aria-label="模式">
+                  <button type="button" class="seg-btn active" data-mode="live">永久</button>
+                  <button type="button" class="seg-btn" data-mode="dry-run">单轮</button>
+                </div>
+              </label>
+              <label class="field">
+                <span>保活间隔</span>
+                <div class="field-row">
+                  <input type="number" name="intervalMin" id="c-intervalMin" min="1" max="1440" value="5" />
+                  <span class="unit">分钟</span>
+                </div>
+              </label>
+              <label class="field">
+                <span>单次流量持续</span>
+                <div class="field-row">
+                  <input type="number" name="trafficSec" id="c-trafficSec" min="10" max="3600" value="60" />
+                  <span class="unit">秒</span>
+                </div>
+              </label>
+              <label class="field">
+                <span>用户协议选择</span>
+                <div class="seg" role="group" aria-label="用户协议选择">
+                  <button type="button" class="seg-btn active" data-protocol="ZTE">中兴</button>
+            <button type="button" class="seg-btn" data-protocol="SCG">深信服</button>
+                </div>
+              </label>
+            </div>
+          </section>
+
+          <section class="composer-block composer-block-desktops" aria-label="云桌面列表">
+            <div class="composer-desk-head">
+              <div class="composer-desk-title-wrap">
+                <span class="composer-block-title">云桌面列表</span>
+                <span class="composer-desk-sub" id="c-desktop-sub">登录后自动获取</span>
+              </div>
+              <button type="button" class="btn btn-secondary btn-desk-refresh" id="c-desk-refresh" data-act="composer-desktops" title="刷新云桌面列表" disabled>刷新列表</button>
+            </div>
+            <div class="composer-desk-panel" id="c-desktop" role="group" aria-label="云桌面列表" aria-disabled="true">
+              <div class="desk-table-wrap">
+                <table class="desk-table" aria-label="云桌面">
+                  <thead>
+                    <tr>
+                      <th class="col-idx">序号</th>
+                      <th class="col-name">名称</th>
+                      <th class="col-id">ID</th>
+                      <th class="col-proto">协议</th>
+                      <th class="col-act">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="c-desktop-tbody">
+                    <tr class="desk-empty-row">
+                      <td colspan="5">
+                        <div class="desk-empty">
+                          <div class="desk-empty-title">暂无数据</div>
+                          <div class="desk-empty-hint">登录后自动获取云桌面列表</div>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <input type="hidden" id="c-userServiceId" value="" />
+            <input type="hidden" id="c-desktopLabel" value="" />
+            <p class="field-note" id="c-desktop-note">登录成功后展示官方 list_clouds（名称 / id | spuCode：xxx）</p>
+          </section>
+
           <div class="composer-foot">
             <p class="composer-msg" id="composer-msg" role="status"></p>
             <div class="composer-actions">
@@ -189,13 +220,13 @@
     <div class="modal-card log-full-dialog log-full-card log-modal-card">
       <div class="log-full-head modal-head">
         <h2 id="log-full-title" class="log-full-title">完整日志</h2>
-        <button type="button" class="btn btn-ghost modal-x" id="log-full-close" aria-label="关闭" title="关闭">×</button>
+        <button type="button" class="btn btn-ghost modal-x" id="log-full-close" data-close-log-modal="1" aria-label="关闭" title="关闭">×</button>
       </div>
       <div class="log-box log-full-body log-full-box card-log" id="log-full-body" data-log-modal-body="1" role="log" aria-live="polite"></div>
     </div>
   </div>
 
   <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=871d-dual"></script>
 </body>
 </html>
