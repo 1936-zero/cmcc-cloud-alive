@@ -515,7 +515,14 @@ def cmd_interactive(args):
         report["initialPowerStatus"] = first_status
         if not cloud.is_running(first_status):
             print("[首次开机检查] 云电脑未运行，自动开机（只执行这一次，无需二次确认）……", flush=True)
-            boot_result = cag_boot.ensure_running(target, state_path, args.boot_wait, args.boot_timeout)
+            boot_wait = int(getattr(args, "boot_wait", 180))
+            boot_timeout = int(getattr(args, "boot_timeout", 15))
+            boot_result = cag_boot.ensure_running(
+                target,
+                state_path,
+                boot_wait,
+                boot_timeout,
+            )
             report["initialBoot"] = boot_result
             print("[首次开机检查] 开机流程完成，马上进入第一轮保活。", flush=True)
         else:
@@ -2454,6 +2461,8 @@ def build_parser():
     ip.add_argument("--duration", type=int, default=0, help="run seconds; 0 means run forever")
     ip.add_argument("--heartbeat-interval", type=int, default=300, help="keepalive round interval seconds")
     ip.add_argument("--status-interval", type=int, default=60, help="status print interval seconds")
+    ip.add_argument("--boot-wait", type=int, default=180, help="seconds to wait for the first automatic boot")
+    ip.add_argument("--boot-timeout", type=int, default=15, help="timeout for the first automatic boot request")
     ip.add_argument("--report-file", default=None, help="write JSON report to this path")
     ip.add_argument("--non-interactive", action="store_true", help="skip prompts; auto-select first target")
     ip.add_argument("--probe", action="store_true")
