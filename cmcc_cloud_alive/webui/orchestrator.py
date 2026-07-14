@@ -1,8 +1,8 @@
 """Multi-profile keepalive job orchestrator (J2).
 
 Parent-process only. Does NOT run keepalive loops on the ASGI event-loop
-thread. Default backend is dry-run (FakeBackend). LIVE subprocess requires
-explicit mode=live AND env CMCC_WEBUI_ALLOW_LIVE=1 (default off).
+thread. Default mode is live (real child). dry-run only when mode explicitly
+set to dry-run. #862 removed CMCC_WEBUI_ALLOW_LIVE gate.
 
 Public method names match app.FakeOrchestrator so J3 `_load_orchestrator`
 swaps in automatically.
@@ -26,12 +26,19 @@ __all__ = ["Orchestrator", "FakeBackend", "live_allowed"]
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # HARD_GATE#861: Shanghai wall clock so orch stamps match child short_time().
+    # Previous UTC "...Z" made card logs jump 8h (e.g. 21:xx child vs 13:xx orch).
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%dT%H:%M:%S+08:00")
+    except Exception:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def live_allowed() -> bool:
-    """LIVE child spawn is opt-in only."""
-    return os.environ.get("CMCC_WEBUI_ALLOW_LIVE", "").strip() in ("1", "true", "TRUE", "yes", "YES")
+    """#862: LIVE always on — no CMCC_WEBUI_ALLOW_LIVE gate (debug = real)."""
+    return True
 
 
 def _data_dir() -> Path:
@@ -101,7 +108,7 @@ def _usid_from_state(state_path: Path) -> str:
 def _live_creds_from_state(state_path: Path) -> Dict[str, str]:
     """Read username/password/usid from profile state for non-interactive live spawn.
 
-    product-keepalive interactive --non-interactive still requires argv credentials
+    simple-keepalive --non-interactive needs argv credentials
     (main.py raises without --password). Values stay out of orch log lines; only the
     child argv carries them (Popen cmd is not logged).
     """
@@ -131,7 +138,7 @@ def _live_creds_from_state(state_path: Path) -> Dict[str, str]:
 
 
 class FakeBackend:
-    """In-process dry-run backend: OPS#497 product-keepalive lines, no network/child."""
+    """In-process dry-run backend: mirrors simple-keepalive interactive lines."""
 
     name = "fake"
 
@@ -175,11 +182,10 @@ class FakeBackend:
         return _fake_short_time()
 
     def _emit_round(self, round_no: int) -> None:
-        """Emit one full OPS#497 product-keepalive round (CLI-shaped, no LIVE)."""
+        """Emit one simple-keepalive interactive round (CLI-shaped, no LIVE)."""
         proto = self.protocol
         kind = proto.lower()
         duration_cfg = self.traffic_sec
-        # Simulated wall time for product summary (slightly above configured duration).
         duration_done = f"{float(duration_cfg) + 0.42:.2f}"
         stage_done = f"{kind}-keepalive-done"
         usid = self.user_service_id
@@ -201,32 +207,26 @@ class FakeBackend:
                 f"[{self._stamp()}] 第{round_no}轮ZTE保活完成 "
                 f"kind={kind} ok=True stage={stage_done} duration={duration_done}s"
             )
-        product = (
-            f"[product-keepalive] kind={kind} ok=True stage={stage_done} "
-            f"duration={duration_done}s"
-        )
         status = f"[{self._stamp()}] 云桌面状态：开机运行中"
-        for line in (hand, product, done, status):
+        for line in (hand, done, status):
             if self.stop_evt.is_set():
                 return
             self.orch._append_log(self.job_id, line)
 
     def _run(self) -> None:
-        # OPS#497/OPS#555 D9: full product markers; one [orch] meta only.
-        # No [dry-run] tick spam, no [live] prefix, no network.
+        # Mirror simple-keepalive interactive boot/loop banners only.
         self.orch._append_log(
             self.job_id,
-            "[orch] dry-run backend=fake (no LIVE child; simulated product-keepalive lines)",
+            "[orch] dry-run backend=fake (no LIVE child; simulated simple-keepalive lines)",
         )
         script = [
-            "移动云电脑保活工具",
+            "爱家移动云电脑",
             f"  协议：{self.protocol}",
             "[首次开机检查] 云电脑已运行，跳过开机，马上进入第一轮保活。",
             (
-                f"进入保活循环：心跳间隔=300s 状态打印间隔=60s "
-                f"duration={self.traffic_sec}s"
+                f"进入保活循环：模式=永久 协议={self.protocol} "
+                f"间隔=5分钟 单轮流量={self.traffic_sec}s"
             ),
-            "提示：当前 desktop HTTP keepalive 路由尚未被证明可独立保活，仅作状态探测。",
         ]
         for line in script:
             if self.stop_evt.is_set():
@@ -239,11 +239,9 @@ class FakeBackend:
         while not self.stop_evt.is_set():
             round_no += 1
             self._emit_round(round_no)
-            # After first full marker burst, slow down so card can scroll history.
             wait_s = 0.35 if round_no < 3 else 2.0
             if self.stop_evt.wait(wait_s):
                 break
-            # Interval status tick (CLI prints 云桌面状态 between rounds).
             if not self.stop_evt.is_set():
                 self.orch._append_log(
                     self.job_id,
@@ -253,9 +251,9 @@ class FakeBackend:
 
 
 class SubprocessBackend:
-    """LIVE child: python -m cmcc_cloud_alive --state <path> product-keepalive ...
+    """LIVE child: python -m cmcc_cloud_alive --state <path> simple-keepalive ...
 
-    Only constructed when live_allowed() and mode=live.
+    Constructed when mode=live (always allowed after #862).
     """
 
     name = "subprocess"
@@ -270,6 +268,7 @@ class SubprocessBackend:
         stop_evt: threading.Event,
         log_path: Path,
         lock_path: Path,
+        user_service_id: Optional[str] = None,
     ) -> None:
         self.orch = orch
         self.job_id = job_id
@@ -279,6 +278,8 @@ class SubprocessBackend:
         self.stop_evt = stop_evt
         self.log_path = log_path
         self.lock_path = lock_path
+        # HARD_GATE#868: per-card usid override (shared state holds token only)
+        self.user_service_id = (user_service_id or "").strip() or None
         self._proc: Optional[subprocess.Popen] = None
         self._thread: Optional[threading.Thread] = None
         self._lock_fd: Optional[int] = None
@@ -289,12 +290,15 @@ class SubprocessBackend:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         log_f = open(self.log_path, "a", encoding="utf-8")  # noqa: SIM115 — kept open for child lifetime
         try:
+            # HARD_GATE#870: never inherit a cwd that shadows site-packages with
+            # stale /app/cmcc_cloud_alive (python -m prefers cwd first).
             self._proc = subprocess.Popen(
                 cmd,
                 stdout=log_f,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
+                cwd="/data",
                 env=self._child_env(),
             )
         except Exception as e:
@@ -345,28 +349,29 @@ class SubprocessBackend:
         return self._proc.pid if self._proc.poll() is None else self._proc.pid
 
     def _build_cmd(self) -> List[str]:
-        # Unique --state; product-keepalive interactive --non-interactive.
-        # main.py non-interactive still needs --username/--password on argv (not
-        # sole of this module). Prefer profile state JSON; never log those values.
-        # Protocol selection is state/route driven; we only hint via env.
+        # LIVE child matches Python simple interactive path:
+        # simple-keepalive -> _simple_run_keepalive -> _simple_forced_keepalive(ZTE|SCG).
+        # HARD_GATE#868: card usid override wins; shared acct_*.json supplies token/creds.
         creds = _live_creds_from_state(self.state_path)
+        usid = (self.user_service_id or "") or (creds.get("user_service_id") or "")
+        if not usid:
+            raise RuntimeError("state missing userServiceId/selectedUserServiceId")
+        proto = (self.protocol or "ZTE").upper()
+        if proto not in ("ZTE", "SCG"):
+            proto = "ZTE"
         cmd = [
             sys.executable,
             "-m",
             "cmcc_cloud_alive",
             "--state",
             str(self.state_path),
-            "product-keepalive",
-            "interactive",
+            "simple-keepalive",
+            "--user-service-id",
+            str(usid),
+            "--protocol",
+            proto,
         ]
-        usid = creds.get("user_service_id")
-        if usid:
-            cmd.append(usid)
-        cmd.append("--non-interactive")
-        if creds.get("username"):
-            cmd.extend(["--username", creds["username"]])
-        if creds.get("password"):
-            cmd.extend(["--password", creds["password"]])
+        # extra_args already carries --interval-minutes/--traffic-seconds/--mode
         cmd.extend(self.extra_args)
         return cmd
 
@@ -374,7 +379,10 @@ class SubprocessBackend:
         env = dict(os.environ)
         env["CMCC_ORCH_JOB_ID"] = self.job_id
         env["CMCC_ORCH_PROTOCOL"] = self.protocol
-        # Container/host must not send SPICE/SCG via HTTP(S) proxy (user hard rule).
+        # HARD_GATE#870: drop PYTHONPATH so cwd=/data cannot re-introduce /app
+        # package shadowing of site-packages (invalid choice: simple-keepalive).
+        env.pop("PYTHONPATH", None)
+        # Container must not send SPICE/SCG via HTTP(S) proxy (user hard rule).
         for k in (
             "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
             "all_proxy", "ALL_PROXY", "ftp_proxy", "FTP_PROXY",
@@ -570,6 +578,11 @@ class Orchestrator:
             j = self._jobs.get(job_id)
             return dict(j) if j else None
 
+    @staticmethod
+    def _sticky_key(profile_id: str) -> str:
+        """HARD_GATE#854: profile-sticky log buffer key (survives job remaps)."""
+        return "p:" + str(profile_id)
+
     def recent_logs(
         self,
         job_id: Optional[str] = None,
@@ -581,13 +594,115 @@ class Orchestrator:
         HARD_GATE#768-B / ASSIGN#785#4: unscoped /api/logs must not flatten
         job buffers into page-level global log. Card logs stay profile/job scoped
         via /api/profiles/{id}/logs or ?profileId=/jobId=.
+
+        HARD_GATE#854: prefer active job buffer; fall back / merge sticky profile
+        buffer so logs reappear after clear even if job mapping races.
         """
+        with self._lock:
+            pid = profile_id
+            if not job_id and profile_id:
+                job_id = self._by_profile.get(profile_id)
+            if not job_id and profile_id:
+                # fallback: newest job for this profile that still has a buffer
+                candidates = []
+                for jid, job in self._jobs.items():
+                    if (job or {}).get("profileId") == profile_id:
+                        candidates.append((job.get("startedAt") or job.get("createdAt") or "", jid))
+                if candidates:
+                    candidates.sort()
+                    job_id = candidates[-1][1]
+                else:
+                    # last resort: any buffer whose job table maps to profile
+                    for jid, buf in self._log_buffers.items():
+                        if str(jid).startswith("p:"):
+                            continue
+                        job = self._jobs.get(jid) or {}
+                        if job.get("profileId") == profile_id and buf:
+                            job_id = jid
+                            break
+            if not pid and job_id:
+                pid = (self._jobs.get(job_id) or {}).get("profileId")
+            job_lines = list(self._log_buffers.get(job_id, [])) if job_id else []
+            sticky_lines: List[Dict[str, str]] = []
+            if pid:
+                sticky_lines = list(self._log_buffers.get(self._sticky_key(pid), []))
+            if job_lines and sticky_lines:
+                # merge by (at,line) preserving order, prefer sticky chronology then job
+                seen = set()
+                merged: List[Dict[str, str]] = []
+                for entry in sticky_lines + job_lines:
+                    key = (entry.get("at") or "", entry.get("line") or "")
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    merged.append(entry)
+                return merged[-limit:]
+            if job_lines:
+                return job_lines[-limit:]
+            if sticky_lines:
+                return sticky_lines[-limit:]
+            return []
+
+    def clear_logs(
+        self,
+        job_id: Optional[str] = None,
+        profile_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """HARD_GATE#853/#854: really clear job+sticky card log buffers (not FE-only)."""
         with self._lock:
             if not job_id and profile_id:
                 job_id = self._by_profile.get(profile_id)
-            if not job_id:
-                return []
-            return list(self._log_buffers.get(job_id, []))[-limit:]
+            # also clear any historical buffers that still map to this profile
+            targets = set()
+            if job_id:
+                targets.add(job_id)
+            if profile_id:
+                for jid, job in self._jobs.items():
+                    if (job or {}).get("profileId") == profile_id:
+                        targets.add(jid)
+                # buffers may outlive job table; keep by_profile mapping job
+                mapped = self._by_profile.get(profile_id)
+                if mapped:
+                    targets.add(mapped)
+                # HARD_GATE#854: always clear sticky profile buffer even if no job map
+                targets.add(self._sticky_key(profile_id))
+            cleared = 0
+            for jid in list(targets):
+                buf = self._log_buffers.get(jid)
+                if buf:
+                    cleared += len(buf)
+                # keep key present so live backend keeps appending to same buffer
+                self._log_buffers[jid] = []
+                self._last_log_line.pop(jid, None)
+            # HARD_GATE#854: never drop by_profile mapping on clear (new logs must reattach)
+            pid = profile_id
+            if not pid and job_id:
+                pid = (self._jobs.get(job_id) or {}).get("profileId")
+            if pid:
+                # ensure sticky key exists empty so subsequent appends dual-write cleanly
+                self._log_buffers[self._sticky_key(pid)] = []
+                self._last_log_line.pop(self._sticky_key(pid), None)
+            if pid and pid not in self._by_profile and job_id:
+                self._by_profile[pid] = job_id
+            elif pid and job_id and self._by_profile.get(pid) not in targets and job_id in targets:
+                # keep mapped id if it was a target (already mapped)
+                pass
+        if pid or job_id:
+            self._emit(
+                "job_log_cleared",
+                {
+                    "jobId": job_id,
+                    "profileId": pid,
+                    "cleared": cleared,
+                    "at": _now_iso(),
+                },
+            )
+        return {
+            "ok": True,
+            "jobId": job_id,
+            "profileId": pid,
+            "cleared": cleared,
+        }
 
     # ------------------------------------------------------------------
     # Start / stop
@@ -599,24 +714,25 @@ class Orchestrator:
         state_path: Path,
         protocol: str = "ZTE",
         extra_args: Optional[List[str]] = None,
-        mode: str = "dry-run",
+        mode: str = "live",
         interval_sec: Optional[int] = None,
         traffic_sec: Optional[int] = None,
         duration_sec: Optional[int] = None,
+        user_service_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         protocol = (protocol or "ZTE").upper()
         if protocol not in ("ZTE", "SCG"):
             raise ValueError("protocol must be ZTE or SCG")
-        mode = (mode or "dry-run").lower()
-        if mode in ("live", "prod", "production"):
-            if not live_allowed():
-                # Fail closed: refuse LIVE without explicit env switch
-                raise RuntimeError(
-                    "LIVE_DISABLED: set CMCC_WEBUI_ALLOW_LIVE=1 and mode=live to spawn child"
-                )
+        mode = (mode or "live").lower()
+        # #848: 永久(live)/单轮(once|single) 都走真子进程；仅显式 dry-run 走 FakeBackend
+        if mode in ("dry-run", "dryrun", "fake", "sim", "simulate"):
+            mode = "dry-run"
+        elif mode in ("live", "prod", "production", "once", "single", "forever", "permanent", "loop"):
+            # #862: always allow live; gate removed
             mode = "live"
         else:
-            mode = "dry-run"
+            # unknown -> live (real keepalive)
+            mode = "live"
 
         state_path = Path(state_path)
         with self._lock:
@@ -663,7 +779,7 @@ class Orchestrator:
                     stop_evt,
                     protocol=protocol,
                     traffic_sec=traffic_sec,
-                    user_service_id=_usid_from_state(state_path),
+                    user_service_id=(user_service_id or _usid_from_state(state_path)),
                 )
             else:
                 jdir = _jobs_dir() / job_id
@@ -679,6 +795,7 @@ class Orchestrator:
                     stop_evt=stop_evt,
                     log_path=log_path,
                     lock_path=lock_path,
+                    user_service_id=user_service_id,
                 )
             backend.start()
             with self._lock:
@@ -764,6 +881,18 @@ class Orchestrator:
             if len(buf) > 500:
                 del buf[: len(buf) - 500]
             profile_id = (self._jobs.get(job_id) or {}).get("profileId")
+            # HARD_GATE#854: dual-write sticky profile buffer so card logs
+            # reappear after clear even if job mapping races.
+            if profile_id:
+                sk = self._sticky_key(profile_id)
+                if dedupe and self._last_log_line.get(sk) == safe:
+                    pass
+                else:
+                    self._last_log_line[sk] = safe
+                    sbuf = self._log_buffers.setdefault(sk, [])
+                    sbuf.append(entry)
+                    if len(sbuf) > 500:
+                        del sbuf[: len(sbuf) - 500]
         self._emit(
             "job_log",
             {"jobId": job_id, "profileId": profile_id, "at": at, "line": safe},
