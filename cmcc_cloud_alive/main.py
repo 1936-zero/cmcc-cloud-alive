@@ -1497,19 +1497,35 @@ def _run_scg_keepalive(args, auth, route, vm_id, report, started):
                 report["error"] = (_stderr.strip() or "SCG Python route exited %d" % result.returncode)
                 report["nextStep"] = "inspect SCG Python stderr / CEM GetConnectInfo"
             elif scg_mode == "tls_hold":
-                report["error"] = (
-                    "SCG tls_hold failed; returncode=%s tls_hold_ok=%s soho=%s"
-                    % (result.returncode, tls_hold_ok, soho_code)
+                # soho 4039-4042 = lock-screen OK (no password unlock); not a fail root cause.
+                lock_note = (
+                    "; soho=%s is lock-screen normal (not fail root cause)" % soho_code
+                    if desktop_lock_hint
+                    else ("; soho=%s" % soho_code if soho_code is not None else "")
                 )
-                report["nextStep"] = "inspect TLS hold / soho heartbeat / network path to SCG"
-            else:
                 report["error"] = (
-                    "SCG spice_ok=False (MAIN_INIT missing); returncode=%s channels=%s soho=%s lock_hint=%s"
-                    % (result.returncode, channels, soho_code, desktop_lock_hint)
+                    "SCG tls_hold failed; returncode=%s tls_hold_ok=%s%s"
+                    % (result.returncode, tls_hold_ok, lock_note)
+                )
+                report["nextStep"] = (
+                    "inspect TLS hold / network path to SCG"
+                    if desktop_lock_hint
+                    else "inspect TLS hold / soho heartbeat / network path to SCG"
+                )
+            else:
+                lock_note = (
+                    "; soho=%s lock_hint=True (lock-screen normal, not fail root cause)" % soho_code
+                    if desktop_lock_hint
+                    else ("; soho=%s lock_hint=%s" % (soho_code, desktop_lock_hint))
+                )
+                report["error"] = (
+                    "SCG spice_ok=False (MAIN_INIT missing); returncode=%s channels=%s%s"
+                    % (result.returncode, channels, lock_note)
                 )
                 report["nextStep"] = (
                     "SPICE-over-trunk handshake failed; see golden TLS+local SPICE topology "
                     "or enable --scg-mode tls_hold if only TCP/TLS hold is required"
+                    + ("; soho 4041/lock is expected on unlock-without-password desktops" if desktop_lock_hint else "")
                 )
 
     # D3: business_ok after mode ok (fail-closed; tls_hold never true)

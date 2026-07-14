@@ -968,9 +968,9 @@
       (busy ? "disabled" : "") +
       (open ? ' aria-expanded="true"' : ' aria-expanded="false"') +
       ">配置</button>" +
-      '<button type="button" class="btn btn-ghost" data-act="desktop-logout" ' +
+      '<button type="button" class="btn btn-ghost" data-act="clear-thread" ' +
       (busy ? "disabled" : "") +
-      ' title="调用 /cc/cloudPc/logout/v2 释放桌面会话锁">桌面登出</button>' +
+      ' title="停止并清除该账号当前保活线程（本地编排，不调用上游桌面登出）">清除线程</button>' +
       '<button type="button" class="btn btn-ghost" data-act="clear-logs" ' +
       (busy ? "disabled" : "") +
       ">清空日志</button>" +
@@ -1722,72 +1722,64 @@ function setComposerMsg(text, kind) {
     }
   }
 
-  async function onDesktopLogout(pid) {
-    // Card button: release SOHO desktop session lock via /cc/cloudPc/logout/v2
+  async function onClearThread(pid) {
+    // Card button: stop/clear local keepalive worker for this profile.
+    // Replaces upstream desktop-logout; user evidence shows orphan local
+    // threads (not SOHO logout) were what blocked restart after fail.
     if (!pid) return;
     const p = state.profiles.find(function (x) {
       return x.id === pid;
     });
-    const d = state.drafts[pid] || {};
-    const usid =
-      (d && d.userServiceId) ||
-      (p && (p.userServiceId || p.selectedUserServiceId)) ||
-      "";
     const name = (p && p.displayName) || pid;
     const ok = await confirmModal(
-      "桌面登出",
-      "确定对「" +
+      "清除线程",
+      "确定清除「" +
         name +
-        "」执行桌面登出？将调用 /cc/cloudPc/logout/v2 释放桌面会话锁" +
-        (usid ? "（" + usid + "）" : "") +
-        "。账号登录态会保留。",
-      "确定登出"
+        "」的当前保活线程？仅停止本机编排任务，不会调用上游桌面登出，账号登录态保留。",
+      "确定清除"
     );
     if (!ok) return;
     state.busy[pid] = true;
     renderCards();
     try {
-      const body = {};
-      if (usid) body.userServiceId = String(usid);
-      const data = await api(
-        "/api/profiles/" + encodeURIComponent(pid) + "/desktop-logout",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        }
+      await api(
+        "/api/profiles/" + encodeURIComponent(pid) + "/jobs/current",
+        { method: "DELETE" }
       );
-      const rid =
-        (data && data.userServiceId) || usid || "";
-      const upCode =
-        data &&
-        data.response &&
-        (data.response.code != null ? data.response.code : data.response.msg);
-      toast(
-        "桌面登出已提交" +
-          (rid ? " · " + rid : "") +
-          (upCode != null && upCode !== "" ? "（" + upCode + "）" : "")
-      );
-      pushGlobal(
-        "[" +
-          pid +
-          "] 桌面登出成功" +
-          (rid ? " usid=" + rid : "") +
-          (upCode != null && upCode !== "" ? " code=" + upCode : "")
-      );
+      toast("已清除保活线程");
+      pushGlobal("[" + pid + "] 已清除保活线程");
       state.cardMsg[pid] = "";
       await loadProfiles();
       await loadLogs(pid).catch(function () {});
     } catch (e) {
-      const msg = humanError(e, "桌面登出失败");
-      state.cardMsg[pid] = msg;
-      toast(msg, true);
-      pushGlobal("[" + pid + "] 桌面登出失败: " + msg, "error");
-      renderCards();
+      // No running job is still a successful "clear" from user POV.
+      const code = e && (e.code || e.status);
+      const msgRaw = String((e && (e.message || e.detail)) || "");
+      if (
+        code === "NOT_FOUND" ||
+        code === 404 ||
+        /not.?found|no.+job|无.+任务|没有.+任务/i.test(msgRaw)
+      ) {
+        toast("当前无运行中的保活线程");
+        pushGlobal("[" + pid + "] 清除线程：当前无运行任务");
+        state.cardMsg[pid] = "";
+        await loadProfiles().catch(function () {});
+      } else {
+        const msg = humanError(e, "清除线程失败");
+        state.cardMsg[pid] = msg;
+        toast(msg, true);
+        pushGlobal("[" + pid + "] 清除线程失败: " + msg, "error");
+        renderCards();
+      }
     } finally {
       state.busy[pid] = false;
       renderCards();
     }
+  }
+
+  // Backward-compat alias (old handlers / residual callers).
+  async function onDesktopLogout(pid) {
+    return onClearThread(pid);
   }
 
   async function onDelete(pid) {
@@ -2618,7 +2610,7 @@ function setComposerMsg(text, kind) {
       else if (act === "delete") onDelete(pid);
       else if (act === "desktops") onDesktops(pid);
       else if (act === "login") onConfigLogin(pid);
-      else if (act === "desktop-logout") onDesktopLogout(pid);
+      else if (act === "desktop-logout" || act === "clear-thread") onClearThread(pid);
       else if (act === "clear-logs") {
         // HARD_GATE#853: real backend clear (not FE-only fake clear)
         if (!pid) return;

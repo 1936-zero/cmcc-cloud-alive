@@ -4,14 +4,29 @@ from . import cloud, core
 
 
 def desktop_logout(user_service_id=None, state_path=None):
-    target = cloud.selected_user_service_id(state_path, user_service_id)
+    """Release SOHO desktop session lock via /cc/cloudPc/logout/v2.
+
+    When *user_service_id* is provided, call the API directly and skip
+    listClouds validation.  That validation is useful for resolving a
+    missing id, but it turns token-expired / stale-usid cases into a
+    hard failure before the logout endpoint is even reached (WebUI 502).
+    """
     args = core.argparse.Namespace(state=state_path)
-    response = core.api_request("/cc/cloudPc/logout/v2", {"userServiceId": str(target)}, args)
-    core.merge_state({
-        "lastDesktopLogoutAt": core.shanghai_now().isoformat(),
-        "lastDesktopLogoutUserServiceId": str(target),
-        "lastDesktopLogoutResponse": response,
-    }, args)
+    if user_service_id is not None and str(user_service_id).strip():
+        target = str(user_service_id).strip()
+    else:
+        target = cloud.selected_user_service_id(state_path, None)
+    response = core.api_request(
+        "/cc/cloudPc/logout/v2", {"userServiceId": str(target)}, args
+    )
+    core.merge_state(
+        {
+            "lastDesktopLogoutAt": core.shanghai_now().isoformat(),
+            "lastDesktopLogoutUserServiceId": str(target),
+            "lastDesktopLogoutResponse": response,
+        },
+        args,
+    )
     return response
 
 

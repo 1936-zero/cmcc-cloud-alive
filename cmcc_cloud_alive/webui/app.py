@@ -720,10 +720,12 @@ async def system_info(request: Request) -> JSONResponse:
     return JSONResponse(
         {
             "ok": True,
+            "service": "cmcc-cloud-alive",
             "dataDir": str(_data_dir()),
             "profilesDir": str(profiles_dir()),
             "cliCallable": True,  # package present; not probing LIVE
-            "version": "0.1.0-webui-j3",
+            # Footer: "服务 cmcc-cloud-alive · v{version}" — align with WebUI baseline id.
+            "version": "0.1.0-webui-871d-dual",
             "tokenRequired": bool(os.environ.get("CMCC_WEBUI_TOKEN")),
             "orchestrator": type(ORCH).__name__,
         }
@@ -1494,10 +1496,9 @@ async def profiles_desktop_logout(request: Request) -> JSONResponse:
             next_step="请先登录建立会话，再执行桌面登出",
         )
 
-    try:
-        _sync_shared_account(state)
-    except Exception:
-        pass
+    # Read-only live path: do NOT _sync_shared_account here.
+    # Sync would write this card's userServiceId into the shared acct_*.json and
+    # clobber a sibling card of the same account (multi-card same-username).
     live_path = _resolve_live_state_path(path, state)
 
     try:
@@ -1507,11 +1508,24 @@ async def profiles_desktop_logout(request: Request) -> JSONResponse:
         code_name = "UPSTREAM_ERROR"
         status = 502
         resp = getattr(e, "response", None)
+        rc = None
         if isinstance(resp, dict):
             rc = resp.get("code")
-            if rc in (4001, 4003, 4010, 4011, 4100, 401, 403) or "token" in msg.lower():
-                code_name = "AUTH_EXPIRED"
-                status = 401
+        # Token / session expired codes from CMCC SOHO (incl. 4015)
+        auth_codes = (4001, 4003, 4010, 4011, 4015, 4100, 401, 403)
+        low = msg.lower()
+        if (
+            (rc in auth_codes)
+            or "token" in low
+            or "4015" in msg
+            or "未登录" in msg
+            or "登录" in msg and ("失效" in msg or "过期" in msg)
+        ):
+            code_name = "AUTH_EXPIRED"
+            status = 401
+        elif "not found" in low or "userServiceId not found" in msg:
+            code_name = "NOT_FOUND"
+            status = 404
         return api_error(
             code_name,
             f"desktop_logout failed: {msg}",
@@ -1519,9 +1533,67 @@ async def profiles_desktop_logout(request: Request) -> JSONResponse:
             next_step=(
                 "会话可能已失效：请重新登录后再试桌面登出"
                 if code_name == "AUTH_EXPIRED"
-                else "上游桌面登出失败：检查网络/账号后重试"
+                else (
+                    "云桌面 usid 无效或不属于当前账号：请重新「获取云桌面」后再登出"
+                    if code_name == "NOT_FOUND"
+                    else "上游桌面登出失败：检查网络/账号后重试"
+                )
             ),
         )
+
+    # api_request returns body even when SOHO code != 2000; map those to API errors
+    # so the UI does not toast "成功" for 4015/stale usid (was the 502 / fake-ok path).
+    if isinstance(response, dict):
+        up_code = response.get("code")
+        up_msg = (
+            response.get("errMsg")
+            or response.get("msg")
+            or response.get("message")
+            or ""
+        )
+        up_msg = str(up_msg)
+        try:
+            up_code_i = int(up_code) if up_code is not None else None
+        except (TypeError, ValueError):
+            up_code_i = None
+        ok_upstream = (up_code_i == 2000) or (str(up_msg).upper() == "SUCCESS")
+        if not ok_upstream:
+            auth_codes = (4001, 4003, 4010, 4011, 4015, 4100, 401, 403)
+            low = up_msg.lower()
+            if (
+                (up_code_i in auth_codes)
+                or "token" in low
+                or "4015" in str(up_code)
+                or "未登录" in up_msg
+                or ("登录" in up_msg and ("失效" in up_msg or "过期" in up_msg))
+            ):
+                return api_error(
+                    "AUTH_EXPIRED",
+                    f"desktop_logout failed: {up_msg or up_code}",
+                    401,
+                    next_step="会话可能已失效：请重新登录后再试桌面登出",
+                )
+            if (
+                "not found" in low
+                or "userServiceId not found" in up_msg
+                or up_code_i in (404, 4004, 5000)
+            ):
+                return api_error(
+                    "NOT_FOUND" if up_code_i != 5000 else "UPSTREAM_ERROR",
+                    f"desktop_logout failed: {up_msg or up_code}",
+                    404 if up_code_i != 5000 else 502,
+                    next_step=(
+                        "云桌面 usid 无效或不属于当前账号：请重新「获取云桌面」后再登出"
+                        if up_code_i != 5000
+                        else "上游桌面登出失败：检查 usid/网络后重试"
+                    ),
+                )
+            return api_error(
+                "UPSTREAM_ERROR",
+                f"desktop_logout failed: {up_msg or up_code}",
+                502,
+                next_step="上游桌面登出失败：检查网络/账号后重试",
+            )
 
     # Mirror lastDesktopLogout* onto card profile for UI visibility (shared already updated).
     try:
