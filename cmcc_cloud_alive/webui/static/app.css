@@ -864,12 +864,75 @@ img.brand-mark {
     grid-template-columns: 1fr;
   }
 
+  /* mobile header: stacked brand / stats / actions, no awkward wrap */
   .topbar {
     padding: 10px 12px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .brand {
+    min-width: 0;
+    width: 100%;
+    gap: 10px;
+  }
+
+  .brand-text {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .brand-text h1 {
+    font-size: 14px;
+    line-height: 1.25;
+  }
+
+  .brand-sub {
+    font-size: 11px;
+    line-height: 1.35;
+    white-space: normal;
+  }
+
+  .top-stats {
+    width: 100%;
+    flex: none;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .stat {
+    text-align: center;
+    padding: 5px 2px;
+    font-size: 11px;
+    min-width: 0;
+  }
+
+  .top-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .top-actions .btn {
+    width: 100%;
+    justify-content: center;
   }
 
   .main {
     padding: 12px 10px 28px;
+  }
+}
+
+@media (max-width: 380px) {
+  .brand-sub {
+    display: none;
+  }
+
+  .top-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -3696,7 +3759,7 @@ button.desk-refresh-cta:hover,
   width: 30% !important;
   min-width: 0 !important;
   max-width: none !important;
-  text-align: left !important;
+  text-align: center !important;
   display: table-cell !important;
   box-sizing: border-box !important;
 }
@@ -4412,7 +4475,7 @@ html body .desk-table .col-name {
   width: 30% !important;
   min-width: 0 !important;
   max-width: none !important;
-  text-align: left !important;
+  text-align: center !important;
   box-sizing: border-box !important;
 }
 .desk-table col.col-id,
@@ -4465,6 +4528,7 @@ html body .desk-table .col-act {
   word-break: break-word !important;
   text-overflow: clip !important;
   line-height: 1.25 !important;
+  text-align: center !important;
 }
 /* narrow viewports: horizontal scroll instead of crushing 5 cols */
 @media (max-width: 720px) {
@@ -4591,9 +4655,9 @@ html body .card .log-panel .log-viewport,
   overflow-y: auto !important;
 }
 
-/* HARD_GATE#860d: 居中表头 textGap 数学平衡
+/* HARD_GATE#860d / #873: 居中表头 textGap 数学平衡
    居中时 gapL≈idxW/2+nameW/2, gapR≈nameW/2+idW/2 → 须 idxW≈idW
-   序号=ID=14%，名称24%，协议18%，操作30%；thead 全居中；tbody 名称左齐 */
+   序号=ID=14%，名称24%，协议18%，操作30%；thead/tbody 名称均居中 */
 html body #c-desktop .desk-table,
 html body .desk-table {
   table-layout: fixed !important;
@@ -4634,12 +4698,10 @@ html body .desk-table tbody td.col-name {
   box-sizing: border-box !important;
 }
 html body #c-desktop .desk-table thead th.col-name,
-html body .desk-table thead th.col-name {
-  text-align: center !important;
-}
+html body .desk-table thead th.col-name,
 html body #c-desktop .desk-table tbody td.col-name,
 html body .desk-table tbody td.col-name {
-  text-align: left !important;
+  text-align: center !important;
 }
 html body #c-desktop .desk-table col.col-id,
 html body #c-desktop .desk-table thead th.col-id,

@@ -2950,11 +2950,60 @@ def _simple_run_keepalive(target, state_path, protocol, interval_minutes, traffi
                 time.sleep(transient_backoff_seconds)
     except KeyboardInterrupt:
         print("\n收到中断，已退出保活。", flush=True)
+        print("如需释放桌面会话锁，请输入 logout", flush=True)
+
+
+def _profile_label(state_path):
+    """Short human label for a profile path (basename without .json)."""
+    name = Path(str(state_path or "")).name
+    if name.endswith(".json"):
+        name = name[:-5]
+    return name or str(state_path or "-")
+
+
+def _simple_desktop_logout(state_path, user_service_id=None):
+    """Release SOHO desktop session lock via /cc/cloudPc/logout/v2 for one profile."""
+    profile = _profile_label(state_path)
+    if not _simple_ensure_token(state_path, "桌面登出"):
+        raise core.CmccError("token invalid; desktop logout cancelled")
+    target = None
+    if user_service_id:
+        target = str(user_service_id)
+    else:
+        state = core.load_state(state_path)
+        cached = state.get("selectedUserServiceId")
+        if cached:
+            target = str(cached)
+        else:
+            target = cloud.selected_user_service_id(state_path, None)
+    if not target:
+        raise core.CmccError("no selectedUserServiceId; run login and select a desktop first")
+    print(f"[桌面登出] 档案={profile}  桌面={target}  请求中...", flush=True)
+    response = logout.desktop_logout(target, state_path)
+    code = None
+    msg = ""
+    if isinstance(response, dict):
+        code = response.get("code")
+        msg = str(response.get("msg") or response.get("message") or "").strip()
+    ok = str(code) in ("0", "2000") or code in (0, 2000)
+    status = "成功" if ok else "失败"
+    detail = f"code={code}"
+    if msg:
+        detail = f"{detail}  msg={msg}"
+    print(f"[桌面登出] 档案={profile}  桌面={target}  结果={status}（{detail}）", flush=True)
+    if not ok and response is not None:
+        # Keep raw body only on failure for diagnosis.
+        _print(response)
+    return response
 
 
 def cmd_simple_repl(args):
     print("移动云电脑保活工具", flush=True)
-    print("请输入命令：login 登录并开始保活；help 查看帮助；exit 退出。", flush=True)
+    print(
+        "请输入命令：login 登录并开始保活；logout 桌面登出；help 查看帮助；exit 退出。",
+        flush=True,
+    )
+    last_state = getattr(args, "state", None)
     while True:
         try:
             cmd = input("cmcc> ").strip().lower()
@@ -2967,13 +3016,42 @@ def cmd_simple_repl(args):
             print("已退出。", flush=True)
             return
         if cmd in ("help", "?"):
-            print("可用命令：login / help / exit", flush=True)
+            print(
+                "可用命令：login / logout(desktop-logout) / help / exit",
+                flush=True,
+            )
+            print(
+                "说明：logout 调用 /cc/cloudPc/logout/v2 释放桌面会话锁；"
+                "q/exit/quit 仅退出本地程序，不登出桌面。",
+                flush=True,
+            )
+            continue
+        if cmd in ("logout", "desktop-logout"):
+            try:
+                if last_state:
+                    active_state = last_state
+                else:
+                    active_state, _existing = _choose_state_profile(args)
+                    last_state = active_state
+                _simple_desktop_logout(active_state)
+            except SimpleInputCancelled:
+                print("已返回主菜单。", flush=True)
+            except core.CmccError as err:
+                print(f"[桌面登出] 失败：{err}", flush=True)
+                if getattr(err, "response", None) is not None:
+                    _print(err.response)
+            except ValueError as err:
+                print(f"输入格式错误：{err}", flush=True)
             continue
         if cmd != "login":
-            print("未知命令。请输入 login、help 或 exit。", flush=True)
+            print(
+                "未知命令。请输入 login、logout、help 或 exit。",
+                flush=True,
+            )
             continue
         try:
             active_state, existing_profile = _choose_state_profile(args)
+            last_state = active_state
             state = core.load_state(active_state)
             cached_username = state.get("username") or ""
             # Existing profile already knows main/sub; only new profiles ask.

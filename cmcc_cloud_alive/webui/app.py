@@ -1441,6 +1441,109 @@ async def profiles_stop_job(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "job": job})
 
 
+def _desktop_logout_for_profile(live_path: Path, user_service_id: str) -> Dict[str, Any]:
+    """Call CLI desktop_logout → /cc/cloudPc/logout/v2 on worker thread."""
+    from cmcc_cloud_alive import logout as logout_mod
+
+    return logout_mod.desktop_logout(
+        user_service_id=user_service_id or None,
+        state_path=str(live_path),
+    )
+
+
+async def profiles_desktop_logout(request: Request) -> JSONResponse:
+    """Desktop session logout via /cc/cloudPc/logout/v2 (same as CLI logout --desktop).
+
+    Uses this card's userServiceId and shared acct_*.json token path so multi-card
+    same-account keeps one live session file (HARD_GATE#868).
+    """
+    pid = request.path_params["profile_id"]
+    path = _profile_path(pid)
+    if not path.is_file():
+        return api_error("NOT_FOUND", f"profile {pid} not found", 404)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    state = _hydrate_profile_from_shared(_read_state(path))
+    usid = (
+        body.get("userServiceId")
+        or body.get("user_service_id")
+        or state.get("userServiceId")
+        or state.get("selectedUserServiceId")
+        or state.get("user_service_id")
+        or ""
+    )
+    usid = str(usid).strip() if usid is not None else ""
+    if not usid:
+        return api_error(
+            "VALIDATION",
+            "userServiceId required for desktop logout",
+            400,
+            next_step="请先选择云桌面，或在配置中填写 userServiceId",
+        )
+    token = state.get("sohoToken") or state.get("token") or ""
+    if not token:
+        return api_error(
+            "AUTH_REQUIRED",
+            "未登录：当前账号没有有效会话（sohoToken），无法桌面登出",
+            401,
+            next_step="请先登录建立会话，再执行桌面登出",
+        )
+
+    try:
+        _sync_shared_account(state)
+    except Exception:
+        pass
+    live_path = _resolve_live_state_path(path, state)
+
+    try:
+        response = await asyncio.to_thread(_desktop_logout_for_profile, live_path, usid)
+    except Exception as e:
+        msg = str(e) or e.__class__.__name__
+        code_name = "UPSTREAM_ERROR"
+        status = 502
+        resp = getattr(e, "response", None)
+        if isinstance(resp, dict):
+            rc = resp.get("code")
+            if rc in (4001, 4003, 4010, 4011, 4100, 401, 403) or "token" in msg.lower():
+                code_name = "AUTH_EXPIRED"
+                status = 401
+        return api_error(
+            code_name,
+            f"desktop_logout failed: {msg}",
+            status,
+            next_step=(
+                "会话可能已失效：请重新登录后再试桌面登出"
+                if code_name == "AUTH_EXPIRED"
+                else "上游桌面登出失败：检查网络/账号后重试"
+            ),
+        )
+
+    # Mirror lastDesktopLogout* onto card profile for UI visibility (shared already updated).
+    try:
+        card = _read_state(path)
+        card["lastDesktopLogoutAt"] = _now_iso()
+        card["lastDesktopLogoutUserServiceId"] = usid
+        card["updatedAt"] = _now_iso()
+        _write_state(path, card)
+    except Exception:
+        pass
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "profileId": pid,
+            "userServiceId": usid,
+            "statePath": str(live_path),
+            "response": response,
+        }
+    )
+
+
 async def profiles_logs(request: Request) -> JSONResponse:
     pid = request.path_params["profile_id"]
     path = _profile_path(pid)
@@ -1732,6 +1835,7 @@ routes = [
     Route("/api/profiles/{profile_id}/select-desktop", endpoint=profiles_select_desktop, methods=["POST"]),
     Route("/api/profiles/{profile_id}/jobs", endpoint=profiles_start_job, methods=["POST"]),
     Route("/api/profiles/{profile_id}/jobs/current", endpoint=profiles_stop_job, methods=["DELETE"]),
+    Route("/api/profiles/{profile_id}/desktop-logout", endpoint=profiles_desktop_logout, methods=["POST"]),
     Route("/api/profiles/{profile_id}/logs", endpoint=profiles_logs, methods=["GET"]),
     Route("/api/profiles/{profile_id}/logs", endpoint=profiles_logs_clear, methods=["DELETE"]),
     Route("/api/profiles/{profile_id}/events", endpoint=profiles_events, methods=["GET"]),
