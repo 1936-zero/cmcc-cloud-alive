@@ -2988,12 +2988,39 @@ def _simple_forced_keepalive(target, state_path, protocol, traffic_seconds):
     return _run_zte_keepalive(args, auth, route, vm_id, report, started)
 
 
+def _simple_cloud_status_with_force_retry(target, state_path, context="状态检测"):
+    """cloud.status with one force re-login retry on 4015/auth expiry.
+
+    checkToken/login-ok can still be followed by listClouds 4015 (gateway lag
+    or concurrent same-account re-login).  Minute-status already retries with
+    force=True; first-boot must do the same or child exits rc=1 before the loop.
+    """
+    try:
+        return cloud.status(target, state_path)
+    except Exception as err:
+        if not _is_auth_expired_error(err):
+            raise
+        print(
+            f"[{core.short_time()}] {context}：鉴权失效（{err}），强制重登后重试一次",
+            flush=True,
+        )
+        token.ensure_token(state_path, relogin=True, force=True)
+        return cloud.status(target, state_path)
+
+
 def _simple_run_keepalive(target, state_path, protocol, interval_minutes, traffic_seconds, mode):
     interval_seconds = max(1, int(interval_minutes) * 60)
     traffic_seconds = max(1, int(traffic_seconds))
     _simple_ensure_token(state_path, "首次开机检查前")
     print("\n[首次开机检查] 正在检测云电脑状态……", flush=True)
-    pre_snap = cloud.status(target, state_path)
+    try:
+        pre_snap = _simple_cloud_status_with_force_retry(
+            target, state_path, context="首次开机检查"
+        )
+    except Exception as err:
+        # Auth already force-retried once above; other errors still abort first-boot.
+        print(f"[首次开机检查] 首次状态检测失败，任务终止，不进入保活：{err}", flush=True)
+        return
     pre_snap_text = pre_snap.get("vmStatusShow") or pre_snap.get("vmStatus")
     print(f"[首次开机检查] 当前状态：{pre_snap_text} running={cloud.is_running(pre_snap)}", flush=True)
     if cloud.is_running(pre_snap):
@@ -3006,9 +3033,38 @@ def _simple_run_keepalive(target, state_path, protocol, interval_minutes, traffi
             try:
                 cag_boot.ensure_running(target, state_path, boot_wait=180, timeout=30, refresh_wait=5)
             except Exception as boot_err:
-                print(f"[首次开机检查] 首次状态检测/开机失败，任务终止，不进入保活：{boot_err}", flush=True)
+                if _is_auth_expired_error(boot_err):
+                    print(
+                        f"[首次开机检查] 开机鉴权失效（{boot_err}），强制重登后重试开机一次",
+                        flush=True,
+                    )
+                    try:
+                        token.ensure_token(state_path, relogin=True, force=True)
+                        cag_boot.ensure_running(
+                            target, state_path, boot_wait=180, timeout=30, refresh_wait=5
+                        )
+                    except Exception as boot_retry_err:  # noqa: BLE001
+                        print(
+                            f"[首次开机检查] 首次状态检测/开机失败，任务终止，不进入保活：{boot_retry_err}",
+                            flush=True,
+                        )
+                        return
+                else:
+                    print(
+                        f"[首次开机检查] 首次状态检测/开机失败，任务终止，不进入保活：{boot_err}",
+                        flush=True,
+                    )
+                    return
+            try:
+                post_snap = _simple_cloud_status_with_force_retry(
+                    target, state_path, context="首次开机后状态"
+                )
+            except Exception as post_err:
+                print(
+                    f"[首次开机检查] 首次状态检测/开机失败，任务终止，不进入保活：{post_err}",
+                    flush=True,
+                )
                 return
-            post_snap = cloud.status(target, state_path)
             if cloud.is_running(post_snap):
                 print("[首次开机检查] 开机流程完成，马上进入第一轮保活。", flush=True)
             else:
@@ -3018,7 +3074,19 @@ def _simple_run_keepalive(target, state_path, protocol, interval_minutes, traffi
         disc = desktop_keepalive.disconnect_time(target, state_path)
         _print_disconnect_time(disc)
     except Exception as err:
-        print(f"[官方自动关机时长]获取失败：{err}", flush=True)
+        if _is_auth_expired_error(err):
+            try:
+                print(
+                    f"[{core.short_time()}] 官方自动关机时长鉴权失效（{err}），强制重登后重试一次",
+                    flush=True,
+                )
+                token.ensure_token(state_path, relogin=True, force=True)
+                disc = desktop_keepalive.disconnect_time(target, state_path)
+                _print_disconnect_time(disc)
+            except Exception as retry_err:  # noqa: BLE001
+                print(f"[官方自动关机时长]获取失败：{retry_err}", flush=True)
+        else:
+            print(f"[官方自动关机时长]获取失败：{err}", flush=True)
 
     print("\n开始保活：", flush=True)
     print("- 后续每轮保活前不再检测开机、不再触发开机", flush=True)
