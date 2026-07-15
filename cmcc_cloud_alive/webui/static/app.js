@@ -18,6 +18,10 @@
     jobsById: Object.create(null),
     jobsByProfile: Object.create(null),
     tokenRequired: false,
+    setupRequired: false,
+    authEnabled: false,
+    authSource: "",
+    gateMode: "", // "setup" | "login" | ""
     es: null,
     sseNeedTokenLogged: false,
     logModalPid: null,
@@ -79,6 +83,845 @@
     } catch (_) {}
   }
 
+
+  function persistClientProfile(pid, clientProfile) {
+    if (!pid) return;
+    const v = String(clientProfile || "linux").toLowerCase();
+    api("/api/profiles/" + encodeURIComponent(pid), {
+      method: "PATCH",
+      body: { clientProfile: v },
+    })
+      .then(function (res) {
+        const p = state.profiles.find(function (x) {
+          return x.id === pid;
+        });
+        const finalV =
+          (res && res.profile && res.profile.clientProfile) || v;
+        if (p) p.clientProfile = finalV;
+        if (state.drafts[pid]) state.drafts[pid].clientProfile = finalV;
+      })
+      .catch(function (err) {
+        pushGlobal(
+          "[" +
+            pid +
+            "] 客户端类型保存失败: " +
+            ((err && err.message) || err),
+          "error"
+        );
+      });
+  }
+
+  function updateTokenBtn() {
+    const btn = document.getElementById("btn-token");
+    if (!btn) return;
+    const has = !!getToken();
+    const enabled = !!state.authEnabled || !!state.tokenRequired;
+    const need = enabled && !has;
+    btn.classList.toggle("is-set", enabled && has);
+    btn.classList.toggle("is-need", need);
+    if (need) {
+      btn.textContent = "设置令牌!";
+      btn.title = "需要访问密钥，点击登录或管理";
+    } else if (enabled && has) {
+      btn.textContent = "令牌✓";
+      btn.title = "鉴权已启用 · 点击管理（改密/清本机/关鉴权）";
+    } else if (enabled) {
+      btn.textContent = "设置令牌";
+      btn.title = "服务器鉴权已启用，点击管理密钥";
+    } else {
+      btn.textContent = "鉴权关";
+      btn.title = "服务器鉴权已关闭 · 点击可启用密钥";
+    }
+  }
+
+  function randomToken(len) {
+    const n = Math.max(8, Math.min(64, len || 16));
+    const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+    let out = "";
+    try {
+      const arr = new Uint8Array(n);
+      crypto.getRandomValues(arr);
+      for (let i = 0; i < n; i++) out += alphabet[arr[i] % alphabet.length];
+      return out;
+    } catch (_) {
+      for (let i = 0; i < n; i++) {
+        out += alphabet[Math.floor(Math.random() * alphabet.length)];
+      }
+      return out;
+    }
+  }
+
+  function setGateErr(msg, which) {
+    // which: "setup" | "login" | undefined (both clear / login preferred for display)
+    const setupEl = $("#gate-setup-err");
+    const loginEl = $("#gate-login-err") || $("#gate-error");
+    if (which === "setup") {
+      if (setupEl) setupEl.textContent = msg || "";
+      if (loginEl && !msg) loginEl.textContent = "";
+      return;
+    }
+    if (which === "login") {
+      if (loginEl) loginEl.textContent = msg || "";
+      if (setupEl && !msg) setupEl.textContent = "";
+      return;
+    }
+    if (setupEl) setupEl.textContent = msg || "";
+    if (loginEl) loginEl.textContent = msg || "";
+  }
+
+  function showAccessGate(mode) {
+    const gate = $("#access-gate");
+    const app = $("#app");
+    if (!gate) return;
+    state.gateMode = mode || (state.setupRequired ? "setup" : "login");
+    // Align with showTokenModal: clear class + attr + property so [hidden] CSS never sticks
+    gate.classList.remove("hidden");
+    gate.removeAttribute("hidden");
+    gate.hidden = false;
+    gate.setAttribute("aria-hidden", "false");
+    if (app) {
+      app.classList.add("gate-locked");
+      app.setAttribute("aria-hidden", "true");
+    }
+    const title = $("#gate-title");
+    const sub = $("#gate-sub");
+    const setupPane = $("#gate-setup-panel");
+    const loginPane = $("#gate-login-panel");
+    const isSetup = state.gateMode === "setup";
+    if (title) title.textContent = isSetup ? "设置访问密钥" : "输入访问密钥";
+    if (sub) {
+      sub.textContent = isSetup
+        ? "首次部署可选：保护控制台，之后也可在顶栏修改。"
+        : "此控制台已启用鉴权，输入密钥后进入。";
+    }
+    if (setupPane) {
+      setupPane.classList.toggle("hidden", !isSetup);
+      if (isSetup) {
+        setupPane.removeAttribute("hidden");
+        setupPane.hidden = false;
+      }
+    }
+    if (loginPane) {
+      loginPane.classList.toggle("hidden", isSetup);
+      if (!isSetup) {
+        loginPane.removeAttribute("hidden");
+        loginPane.hidden = false;
+      }
+    }
+    setGateErr("");
+    const focusEl = isSetup ? $("#gate-setup-input") : $("#gate-login-input");
+    if (focusEl) {
+      try {
+        focusEl.focus();
+      } catch (_) {}
+    }
+    updateTokenBtn();
+  }
+
+  function hideAccessGate() {
+    const gate = $("#access-gate");
+    const app = $("#app");
+    if (gate) {
+      gate.classList.add("hidden");
+      gate.setAttribute("hidden", "");
+      gate.hidden = true;
+      gate.setAttribute("aria-hidden", "true");
+    }
+    if (app) {
+      app.classList.remove("gate-locked");
+      app.setAttribute("aria-hidden", "false");
+    }
+    state.gateMode = "";
+    setGateErr("");
+    updateTokenBtn();
+  }
+
+  async function refreshAuthStatus() {
+    try {
+      const st = await api("/api/auth/status");
+      state.setupRequired = !!(st && st.setupRequired);
+      state.tokenRequired = !!(st && st.tokenRequired);
+      state.authEnabled = !!(st && (st.authEnabled != null ? st.authEnabled : st.tokenRequired));
+      state.authSource = (st && (st.tokenSource || st.source)) || state.authSource || "";
+      updateTokenBtn();
+      return st;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function enterConsoleAfterAuth() {
+    hideAccessGate();
+    try {
+      await loadSys();
+    } catch (_) {}
+    try {
+      await loadProfiles(true);
+    } catch (_) {}
+    try {
+      connectSSE();
+    } catch (_) {}
+    try {
+      startPolling();
+    } catch (_) {}
+    updateTokenBtn();
+  }
+
+  async function submitGateSetup() {
+    setGateErr("", "setup");
+    const input = $("#gate-setup-input");
+    let token = (input && input.value || "").trim();
+    if (!token) {
+      setGateErr("请输入要设置的访问密钥，或点「生成」", "setup");
+      return;
+    }
+    if (token.length < 4) {
+      setGateErr("密钥至少 4 位", "setup");
+      return;
+    }
+    const btn = $("#gate-setup-ok");
+    if (btn) btn.disabled = true;
+    try {
+      const res = await api("/api/auth/setup", {
+        method: "POST",
+        body: JSON.stringify({ token: token }),
+      });
+      const saved = (res && (res.token || token)) || token;
+      setToken(saved);
+      state.setupRequired = false;
+      state.tokenRequired = true;
+      state.authSource = "file";
+      updateTokenBtn();
+      hideAccessGate();
+      toast("访问密钥已设置");
+      pushGlobal("访问密钥首次设置完成");
+      try {
+        await loadSys();
+        await loadProfiles(true);
+      } catch (e2) {
+        toast(humanError(e2, "进入控制台失败"), true);
+      }
+    } catch (e) {
+      setGateErr(humanError(e, "设置密钥失败"), "setup");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function submitGateLogin() {
+    setGateErr("", "login");
+    const input = $("#gate-login-input");
+    const token = (input && input.value || "").trim();
+    if (!token) {
+      setGateErr("请输入访问密钥", "login");
+      return;
+    }
+    const btn = $("#gate-login-ok");
+    if (btn) btn.disabled = true;
+    try {
+      await api("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ token: token }),
+      });
+      setToken(token);
+      state.tokenRequired = true;
+      updateTokenBtn();
+      hideAccessGate();
+      toast("已进入控制台");
+      pushGlobal("访问密钥验证通过");
+      try {
+        await loadSys();
+        await loadProfiles(true);
+      } catch (e2) {
+        toast(humanError(e2, "加载账号失败"), true);
+      }
+    } catch (e) {
+      setGateErr(humanError(e, "访问密钥错误"), "login");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function setTokenModalErr(msg) {
+    const el = $("#token-modal-err");
+    if (el) el.textContent = msg || "";
+  }
+
+  function hideTokenModal() {
+    const m = $("#token-modal");
+    if (!m) return;
+    m.classList.add("hidden");
+    m.hidden = true;
+    m.setAttribute("aria-hidden", "true");
+    setTokenModalErr("");
+  }
+
+  function showTokenModal() {
+    const m = $("#token-modal");
+    if (!m) {
+      // fallback: if HTML not deployed yet
+      toast("令牌管理面板未加载，请刷新页面", true);
+      return;
+    }
+    m.classList.remove("hidden");
+    m.hidden = false;
+    m.setAttribute("aria-hidden", "false");
+    const cur = getToken() || "";
+    const curIn = $("#token-modal-current");
+    const newIn = $("#token-modal-new");
+    if (curIn) curIn.value = cur;
+    if (newIn) newIn.value = "";
+    const st = $("#token-modal-status");
+    if (st) {
+      if (state.authEnabled || state.tokenRequired) {
+        st.textContent =
+          "服务器鉴权：已启用" +
+          (state.authSource ? "（" + state.authSource + "）" : "") +
+          (cur ? " · 本机已保存密钥" : " · 本机无密钥");
+      } else {
+        st.textContent = "服务器鉴权：已关闭（空密钥开放访问）。可在下方启用新密钥。";
+      }
+    }
+    const authOn = !!(state.authEnabled || state.tokenRequired);
+    const enBtn = $("#token-modal-enable");
+    const chBtn = $("#token-modal-change");
+    if (enBtn) {
+      enBtn.hidden = authOn;
+      enBtn.style.display = authOn ? "none" : "";
+      enBtn.disabled = authOn;
+    }
+    if (chBtn) {
+      chBtn.hidden = !authOn;
+      chBtn.style.display = authOn ? "" : "none";
+      chBtn.disabled = !authOn;
+    }
+    setTokenModalErr("");
+  }
+
+  async function tokenModalSubmit(mode) {
+    setTokenModalErr("");
+    const curIn = $("#token-modal-current");
+    const newIn = $("#token-modal-new");
+    const cur = ((curIn && curIn.value) || getToken() || "").trim();
+    const t = ((newIn && newIn.value) || "").trim();
+    if (!t || t.length < 4 || /\s/.test(t)) {
+      setTokenModalErr("新密钥至少 4 位且无空格");
+      return;
+    }
+    const authOn = !!(state.authEnabled || state.tokenRequired);
+    if (mode === "enable" && authOn) {
+      setTokenModalErr("服务器已启用鉴权，请用「修改密钥」");
+      return;
+    }
+    if (mode === "change" && !authOn) {
+      setTokenModalErr("服务器尚未启用鉴权，请用「启用密钥」");
+      return;
+    }
+    if (mode === "change" && !cur) {
+      setTokenModalErr("修改密钥需要填写当前密钥");
+      return;
+    }
+    try {
+      await api("/api/auth/change", {
+        method: "POST",
+        body: JSON.stringify({
+          currentToken: cur || undefined,
+          oldToken: cur || undefined,
+          newToken: t,
+          token: t,
+        }),
+      });
+      setToken(t);
+      state.tokenRequired = true;
+      state.authEnabled = true;
+      state.setupRequired = false;
+      updateTokenBtn();
+      hideTokenModal();
+      toast(mode === "enable" ? "服务器访问密钥已启用" : "服务器访问密钥已修改");
+      pushGlobal(mode === "enable" ? "访问密钥已启用" : "访问密钥已修改");
+      await refreshAuthStatus();
+    } catch (e) {
+      setTokenModalErr(humanError(e, mode === "enable" ? "启用密钥失败" : "修改密钥失败"));
+    }
+  }
+
+  function tokenModalClearLocal() {
+    setToken("");
+    updateTokenBtn();
+    hideTokenModal();
+    toast("已清除本机密钥");
+    if (state.authEnabled || state.tokenRequired) {
+      showAccessGate("login");
+    }
+  }
+
+  async function tokenModalDisable() {
+    setTokenModalErr("");
+    const curIn = $("#token-modal-current");
+    const cur = ((curIn && curIn.value) || getToken() || "").trim();
+    if (!window.confirm("确认关闭服务器访问鉴权？关闭后任何人可打开控制台。")) {
+      return;
+    }
+    try {
+      await api("/api/auth/disable", {
+        method: "POST",
+        body: JSON.stringify({
+          currentToken: cur || undefined,
+          oldToken: cur || undefined,
+          token: cur || undefined,
+        }),
+      });
+      setToken("");
+      state.tokenRequired = false;
+      state.authEnabled = false;
+      state.setupRequired = false;
+      updateTokenBtn();
+      hideTokenModal();
+      hideAccessGate();
+      toast("已关闭服务器鉴权");
+      pushGlobal("访问鉴权已关闭");
+      await refreshAuthStatus();
+      try {
+        await loadSys();
+        await loadProfiles(true);
+      } catch (_) {}
+    } catch (e) {
+      setTokenModalErr(humanError(e, "关闭鉴权失败"));
+    }
+  }
+
+  function wireTokenModal() {
+    const close = $("#token-modal-close");
+    if (close && !close.dataset.bound) {
+      close.dataset.bound = "1";
+      close.addEventListener("click", hideTokenModal);
+    }
+    const enable = $("#token-modal-enable");
+    if (enable && !enable.dataset.bound) {
+      enable.dataset.bound = "1";
+      enable.addEventListener("click", function () {
+        tokenModalSubmit("enable").catch(function () {});
+      });
+    }
+    const change = $("#token-modal-change");
+    if (change && !change.dataset.bound) {
+      change.dataset.bound = "1";
+      change.addEventListener("click", function () {
+        tokenModalSubmit("change").catch(function () {});
+      });
+    }
+    const clearBtn = $("#token-modal-clear");
+    if (clearBtn && !clearBtn.dataset.bound) {
+      clearBtn.dataset.bound = "1";
+      clearBtn.addEventListener("click", tokenModalClearLocal);
+    }
+    const dis = $("#token-modal-disable");
+    if (dis && !dis.dataset.bound) {
+      dis.dataset.bound = "1";
+      dis.addEventListener("click", function () {
+        tokenModalDisable().catch(function () {});
+      });
+    }
+    const modal = $("#token-modal");
+    if (modal && !modal.dataset.boundBackdrop) {
+      modal.dataset.boundBackdrop = "1";
+      modal.addEventListener("click", function (ev) {
+        if (ev.target === modal) hideTokenModal();
+      });
+    }
+  }
+
+  async function openTokenDialog() {
+    // gate6: need login gate when server auth on but no local token
+    await refreshAuthStatus();
+    if ((state.authEnabled || state.tokenRequired) && !getToken()) {
+      showAccessGate("login");
+      return;
+    }
+    showTokenModal();
+  }
+
+  
+  async function submitGateSetupSkip() {
+    // Leave auth disabled: enter console without forcing setup.
+    setGateErr("", "setup");
+    const skipBtn = $("#gate-setup-skip");
+    if (skipBtn) skipBtn.disabled = true;
+    try {
+      try {
+        await api("/api/auth/disable", { method: "POST", body: "{}" });
+      } catch (e) {
+        // API may not exist; treat as soft-skip and just enter UI.
+      }
+      try { setToken(""); } catch (e) {}
+      state.setupRequired = false;
+      state.tokenRequired = false;
+      state.authEnabled = false;
+      state.authSource = "none";
+      updateTokenBtn();
+      hideAccessGate();
+      toast("已跳过访问密钥，控制台可直接使用", "ok");
+      try {
+        await loadSys();
+        await loadProfiles(true);
+      } catch (e) {}
+    } catch (e) {
+      setGateErr((e && e.message) || String(e), "setup");
+    } finally {
+      if (skipBtn) skipBtn.disabled = false;
+    }
+  }
+
+async function submitGateLogin() {
+    setGateErr("", "login");
+    const input = $("#gate-login-input");
+    const token = (input && input.value || "").trim();
+    if (!token) {
+      setGateErr("请输入访问密钥", "login");
+      return;
+    }
+    const btn = $("#gate-login-ok");
+    if (btn) btn.disabled = true;
+    try {
+      await api("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ token: token }),
+      });
+      setToken(token);
+      state.tokenRequired = true;
+      updateTokenBtn();
+      hideAccessGate();
+      toast("已进入控制台");
+      pushGlobal("访问密钥验证通过");
+      try {
+        await loadSys();
+        await loadProfiles(true);
+      } catch (e2) {
+        toast(humanError(e2, "加载账号失败"), true);
+      }
+    } catch (e) {
+      setGateErr(humanError(e, "访问密钥错误"), "login");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function setTokenModalErr(msg) {
+    const el = $("#token-modal-err");
+    if (el) el.textContent = msg || "";
+  }
+
+  function hideTokenModal() {
+    const m = $("#token-modal");
+    if (!m) return;
+    m.classList.add("hidden");
+    m.hidden = true;
+    m.setAttribute("aria-hidden", "true");
+    setTokenModalErr("");
+  }
+
+  function showTokenModal() {
+    const m = $("#token-modal");
+    if (!m) {
+      // fallback: if HTML not deployed yet
+      toast("令牌管理面板未加载，请刷新页面", true);
+      return;
+    }
+    m.classList.remove("hidden");
+    m.hidden = false;
+    m.setAttribute("aria-hidden", "false");
+    const cur = getToken() || "";
+    const curIn = $("#token-modal-current");
+    const newIn = $("#token-modal-new");
+    if (curIn) curIn.value = cur;
+    if (newIn) newIn.value = "";
+    const st = $("#token-modal-status");
+    if (st) {
+      if (state.authEnabled || state.tokenRequired) {
+        st.textContent =
+          "服务器鉴权：已启用" +
+          (state.authSource ? "（" + state.authSource + "）" : "") +
+          (cur ? " · 本机已保存密钥" : " · 本机无密钥");
+      } else {
+        st.textContent = "服务器鉴权：已关闭（空密钥开放访问）。可在下方启用新密钥。";
+      }
+    }
+    const authOn = !!(state.authEnabled || state.tokenRequired);
+    const enBtn = $("#token-modal-enable");
+    const chBtn = $("#token-modal-change");
+    if (enBtn) {
+      enBtn.hidden = authOn;
+      enBtn.style.display = authOn ? "none" : "";
+      enBtn.disabled = authOn;
+    }
+    if (chBtn) {
+      chBtn.hidden = !authOn;
+      chBtn.style.display = authOn ? "" : "none";
+      chBtn.disabled = !authOn;
+    }
+    setTokenModalErr("");
+  }
+
+  async function tokenModalSubmit(mode) {
+    setTokenModalErr("");
+    const curIn = $("#token-modal-current");
+    const newIn = $("#token-modal-new");
+    const cur = ((curIn && curIn.value) || getToken() || "").trim();
+    const t = ((newIn && newIn.value) || "").trim();
+    if (!t || t.length < 4 || /\s/.test(t)) {
+      setTokenModalErr("新密钥至少 4 位且无空格");
+      return;
+    }
+    const authOn = !!(state.authEnabled || state.tokenRequired);
+    if (mode === "enable" && authOn) {
+      setTokenModalErr("服务器已启用鉴权，请用「修改密钥」");
+      return;
+    }
+    if (mode === "change" && !authOn) {
+      setTokenModalErr("服务器尚未启用鉴权，请用「启用密钥」");
+      return;
+    }
+    if (mode === "change" && !cur) {
+      setTokenModalErr("修改密钥需要填写当前密钥");
+      return;
+    }
+    try {
+      await api("/api/auth/change", {
+        method: "POST",
+        body: JSON.stringify({
+          currentToken: cur || undefined,
+          oldToken: cur || undefined,
+          newToken: t,
+          token: t,
+        }),
+      });
+      setToken(t);
+      state.tokenRequired = true;
+      state.authEnabled = true;
+      state.setupRequired = false;
+      updateTokenBtn();
+      hideTokenModal();
+      toast(mode === "enable" ? "服务器访问密钥已启用" : "服务器访问密钥已修改");
+      pushGlobal(mode === "enable" ? "访问密钥已启用" : "访问密钥已修改");
+      await refreshAuthStatus();
+    } catch (e) {
+      setTokenModalErr(humanError(e, mode === "enable" ? "启用密钥失败" : "修改密钥失败"));
+    }
+  }
+
+  function tokenModalClearLocal() {
+    setToken("");
+    updateTokenBtn();
+    hideTokenModal();
+    toast("已清除本机密钥");
+    if (state.authEnabled || state.tokenRequired) {
+      showAccessGate("login");
+    }
+  }
+
+  async function tokenModalDisable() {
+    setTokenModalErr("");
+    const curIn = $("#token-modal-current");
+    const cur = ((curIn && curIn.value) || getToken() || "").trim();
+    if (!window.confirm("确认关闭服务器访问鉴权？关闭后任何人可打开控制台。")) {
+      return;
+    }
+    try {
+      await api("/api/auth/disable", {
+        method: "POST",
+        body: JSON.stringify({
+          currentToken: cur || undefined,
+          oldToken: cur || undefined,
+          token: cur || undefined,
+        }),
+      });
+      setToken("");
+      state.tokenRequired = false;
+      state.authEnabled = false;
+      state.setupRequired = false;
+      updateTokenBtn();
+      hideTokenModal();
+      hideAccessGate();
+      toast("已关闭服务器鉴权");
+      pushGlobal("访问鉴权已关闭");
+      await refreshAuthStatus();
+      try {
+        await loadSys();
+        await loadProfiles(true);
+      } catch (_) {}
+    } catch (e) {
+      setTokenModalErr(humanError(e, "关闭鉴权失败"));
+    }
+  }
+
+  function wireTokenModal() {
+    const close = $("#token-modal-close");
+    if (close && !close.dataset.bound) {
+      close.dataset.bound = "1";
+      close.addEventListener("click", hideTokenModal);
+    }
+    const enable = $("#token-modal-enable");
+    if (enable && !enable.dataset.bound) {
+      enable.dataset.bound = "1";
+      enable.addEventListener("click", function () {
+        tokenModalSubmit("enable").catch(function () {});
+      });
+    }
+    const change = $("#token-modal-change");
+    if (change && !change.dataset.bound) {
+      change.dataset.bound = "1";
+      change.addEventListener("click", function () {
+        tokenModalSubmit("change").catch(function () {});
+      });
+    }
+    const clearBtn = $("#token-modal-clear");
+    if (clearBtn && !clearBtn.dataset.bound) {
+      clearBtn.dataset.bound = "1";
+      clearBtn.addEventListener("click", tokenModalClearLocal);
+    }
+    const dis = $("#token-modal-disable");
+    if (dis && !dis.dataset.bound) {
+      dis.dataset.bound = "1";
+      dis.addEventListener("click", function () {
+        tokenModalDisable().catch(function () {});
+      });
+    }
+    const modal = $("#token-modal");
+    if (modal && !modal.dataset.boundBackdrop) {
+      modal.dataset.boundBackdrop = "1";
+      modal.addEventListener("click", function (ev) {
+        if (ev.target === modal) hideTokenModal();
+      });
+    }
+  }
+
+  async function openTokenDialog() {
+    // gate6: need login gate when server auth on but no local token
+    await refreshAuthStatus();
+    if ((state.authEnabled || state.tokenRequired) && !getToken()) {
+      showAccessGate("login");
+      return;
+    }
+    showTokenModal();
+  }
+
+  
+  async function submitGateSetupSkip() {
+    // Leave auth disabled: no token file, enter console without forcing setup.
+    setGateErr("", "setup");
+    try {
+      // Prefer explicit disable if API exists; otherwise just enter with empty token.
+      try {
+        await api("/api/auth/disable", { method: "POST", body: "{}" });
+      } catch (e1) {
+        try {
+          await api("/api/auth/clear", { method: "POST", body: "{}" });
+        } catch (e2) {
+          /* ok: already no token on server */
+        }
+      }
+      setToken("");
+      state.setupRequired = false;
+      state.tokenRequired = false;
+      state.authEnabled = false;
+      hideAccessGate();
+      updateTokenBtn && updateTokenBtn();
+      if (typeof toast === "function") toast("已跳过访问密钥，控制台可直接使用", "ok");
+      if (typeof bootstrapAfterAuth === "function") {
+        try { await bootstrapAfterAuth(); } catch (e) {}
+      } else if (typeof refreshAll === "function") {
+        try { await refreshAll(); } catch (e) {}
+      }
+    } catch (err) {
+      setGateErr((err && err.message) || String(err), "setup");
+    }
+  }
+
+
+  function bindPasswordReveal(btnId, inputId) {
+    const btn = document.getElementById(btnId);
+    const input = document.getElementById(inputId);
+    if (!btn || !input || btn.dataset.bound) return;
+    btn.dataset.bound = "1";
+    const setLabel = function (visible) {
+      btn.textContent = visible ? "隐藏密钥" : "显示密钥";
+      btn.setAttribute("aria-pressed", visible ? "true" : "false");
+      btn.setAttribute("aria-label", visible ? "隐藏密钥" : "显示密钥");
+    };
+    setLabel(input.type !== "password");
+    btn.addEventListener("click", function () {
+      const show = input.type === "password";
+      input.type = show ? "text" : "password";
+      setLabel(show);
+    });
+  }
+
+function wireAccessGate() {
+    bindPasswordReveal("gate-setup-show", "gate-setup-input");
+    bindPasswordReveal("gate-login-show", "gate-login-input");
+    bindPasswordReveal("token-modal-show-current", "token-modal-current");
+    bindPasswordReveal("token-modal-show-new", "token-modal-new");
+
+    const gen = $("#gate-setup-gen");
+    if (gen && !gen.dataset.bound) {
+      gen.dataset.bound = "1";
+      gen.addEventListener("click", function () {
+        const input = $("#gate-setup-input");
+        if (!input) return;
+        const arr = new Uint8Array(18);
+        crypto.getRandomValues(arr);
+        let s = "";
+        const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        for (let i = 0; i < arr.length; i++) s += alphabet[arr[i] % alphabet.length];
+        input.value = s;
+        setGateErr("", "setup");
+      });
+    }
+    const setupSkip = $("#gate-setup-skip");
+    if (setupSkip && !setupSkip.dataset.bound) {
+      setupSkip.dataset.bound = "1";
+      setupSkip.addEventListener("click", function () {
+        submitGateSetupSkip().catch(function () {});
+      });
+    }
+    const setupOk = $("#gate-setup-ok");
+    if (setupOk && !setupOk.dataset.bound) {
+      setupOk.dataset.bound = "1";
+      setupOk.addEventListener("click", function () {
+        submitGateSetup().catch(function () {});
+      });
+    }
+    const loginOk = $("#gate-login-ok");
+    if (loginOk && !loginOk.dataset.bound) {
+      loginOk.dataset.bound = "1";
+      loginOk.addEventListener("click", function () {
+        submitGateLogin().catch(function () {});
+      });
+    }
+    ["gate-setup-input", "gate-login-input"].forEach(function (id) {
+      const el = document.getElementById(id);
+      if (!el || el.dataset.bound) return;
+      el.dataset.bound = "1";
+      el.addEventListener("keydown", function (ev) {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          if (id === "gate-setup-input") submitGateSetup().catch(function () {});
+          else submitGateLogin().catch(function () {});
+        }
+      });
+    });
+    ["gate-setup-show", "gate-login-show"].forEach(function (id) {
+      const el = document.getElementById(id);
+      if (!el || el.dataset.bound) return;
+      el.dataset.bound = "1";
+      el.addEventListener("change", function () {
+        const inputId = id.indexOf("setup") >= 0 ? "gate-setup-input" : "gate-login-input";
+        const input = document.getElementById(inputId);
+        if (input) input.type = el.checked ? "text" : "password";
+      });
+    });
+  }
+
   function unwrapApiError(raw) {
     // BE api_error shape: { ok:false, error:{ code, message, nextStep? } }
     // Also accept flat { code, message } and thrown Error with .payload/.data
@@ -128,7 +971,10 @@
       AUTH_EXPIRED: "登录会话失效，请重新登录",
       HTTP_401: "登录失败（401）：账号密码错误或会话失效",
       401: "登录失败（401）：账号密码错误或会话失效",
-      AUTH_REQUIRED: "需要先登录账号",
+      AUTH_REQUIRED: "需要访问密钥",
+      TOKEN_REQUIRED: "需要访问密钥",
+      SETUP_REQUIRED: "请先完成首次访问密钥设置",
+      TOKEN_INVALID: "访问密钥错误",
       LOGIN_REQUIRED: "请先登录账号",
       DESKTOP_REQUIRED: "请先选择云桌面再启动",
       NETWORK: "网络异常，请稍后重试",
@@ -136,7 +982,9 @@
     let base = "";
     if (code && map[code]) {
       base = map[code];
-      if (msg && code === "AUTH_FAILED" && /4119|账号|密码|短验|扫码/.test(msg)) {
+      if (msg && /访问密钥|access token|webui_access_token|CMCC_WEBUI_TOKEN/i.test(msg)) {
+        base = "访问密钥错误";
+      } else if (msg && code === "AUTH_FAILED" && /4119|账号|密码|短验|扫码/.test(msg)) {
         base = "账号或密码错误（上游已拒绝）";
       }
     } else if (msg && typeof msg === "string") {
@@ -928,7 +1776,7 @@
     /* HARD_GATE#736: surface id-only; no long desk/spu string */
     const deskIdText = usid || "未选";
     const deskShort = deskLabel || usid || "未选桌面";
-    const client = p.clientProfile || d.clientProfile || "linux";
+    const client = d.clientProfile || p.clientProfile || "linux";
     const protocol =
       resolveUserProtocol(d.protocol, p && p.protocol, p && p.lastOfficialProtocol, p && p.protocolHint, job && job.protocol);
     const mode = d.mode || (p && p.mode) || (job && job.mode) || "live";
@@ -1066,7 +1914,7 @@
     const busy = !!state.busy[pid];
     const job = jobOf(p);
     const user = p.usernameMasked || "未设置账号";
-    const client = p.clientProfile || d.clientProfile || "linux";
+    const client = d.clientProfile || p.clientProfile || "linux";
     const protocol =
       resolveUserProtocol(d.protocol, p && p.protocol, p && p.lastOfficialProtocol, p && p.protocolHint, job && job.protocol);
     const mode = d.mode || (p && p.mode) || (job && job.mode) || "live";
@@ -1543,28 +2391,60 @@ function setComposerMsg(text, kind) {
   }
 
   async function loadSys() {
+    // Prefer public auth status so gate can render even before local token.
+    try {
+      await refreshAuthStatus();
+    } catch (_) {}
     try {
       const info = await api("/api/system/info");
-      state.tokenRequired = !!(info && info.tokenRequired);
+      if (info) {
+        if (typeof info.tokenRequired === "boolean") state.tokenRequired = !!info.tokenRequired;
+        if (typeof info.setupRequired === "boolean") state.setupRequired = !!info.setupRequired;
+        if (typeof info.authEnabled === "boolean") state.authEnabled = !!info.authEnabled;
+        else state.authEnabled = !!state.tokenRequired;
+        state.authSource = info.tokenSource || info.authSource || state.authSource || "";
+      }
       const el = $("#sys-info");
       if (el) {
+        const src = state.authSource ? " · 源:" + state.authSource : "";
+        const flag = state.setupRequired
+          ? " · 待首次设置"
+          : state.authEnabled || state.tokenRequired
+            ? " · 鉴权开"
+            : " · 鉴权关";
         el.textContent =
           "服务 " +
-          (info.service || "cmcc-cloud-alive") +
+          ((info && info.service) || "cmcc-cloud-alive") +
           " · v" +
-          (info.version || "?") +
-          (state.tokenRequired ? " · 需令牌" : "");
+          ((info && info.version) || "?") +
+          flag +
+          src;
       }
+      updateTokenBtn();
     } catch (e) {
-      // If token gate is on and info is still protected, 401 implies need-token.
-      if (e && (e.status === 401 || e.code === "AUTH_FAILED")) {
+      const code = (e && (e.code || (e.error && e.error.code))) || "";
+      if (
+        e &&
+        (e.status === 401 ||
+          code === "AUTH_FAILED" ||
+          code === "AUTH_REQUIRED" ||
+          code === "TOKEN_REQUIRED" ||
+          code === "SETUP_REQUIRED")
+      ) {
         state.tokenRequired = true;
+        state.authEnabled = true;
+        if (code === "SETUP_REQUIRED") state.setupRequired = true;
       }
       const el = $("#sys-info");
       if (el) {
-        el.textContent = state.tokenRequired ? "服务 · 需令牌" : "";
+        el.textContent = state.setupRequired
+          ? "服务 · 待首次设置"
+          : state.authEnabled || state.tokenRequired
+            ? "服务 · 鉴权开"
+            : "服务 · 鉴权关";
       }
     }
+    updateTokenBtn();
   }
 
   function confirmModal(title, body, okText) {
@@ -1611,12 +2491,13 @@ function setComposerMsg(text, kind) {
     state.busy[pid] = true;
     renderCards();
     try {
-      if (d.username || d.password) {
+      // gate6: only POST /login when password present (username-only must not force re-auth)
+      if (d.password) {
         await api("/api/profiles/" + encodeURIComponent(pid) + "/login", {
           method: "POST",
           body: {
             username: d.username || undefined,
-            password: d.password || undefined,
+            password: d.password,
           },
         });
       }
@@ -1669,12 +2550,13 @@ function setComposerMsg(text, kind) {
     state.cardMsg[pid] = "";
     renderCards();
     try {
-      if (d.username || d.password) {
+      // gate6: only POST /login when password is present (avoid "username only" → 401 AUTH_FAILED)
+      if (d.password) {
         await api("/api/profiles/" + encodeURIComponent(pid) + "/login", {
           method: "POST",
           body: {
             username: d.username || undefined,
-            password: d.password || undefined,
+            password: d.password,
           },
         });
       }
@@ -1909,14 +2791,18 @@ function setComposerMsg(text, kind) {
 
 
   function applyOfficialFromDesktop(target, desk) {
+    /* gate6: never overwrite user-selected protocol; only record official hint */
     if (!target || !desk) return target;
     const hint = desk.protocolHint || desk.protocol_hint || desk.protocol || "";
     const spu = desk.spuCode || desk.spu_code || "";
     if (hint) {
       const hp = String(hint).toUpperCase();
       if (hp === "ZTE" || hp === "SCG" || hp === "SANGFOR") {
-        target.protocol = hp === "SANGFOR" ? "SCG" : hp;
-        target.lastOfficialProtocol = target.protocol;
+        const off = hp === "SANGFOR" ? "SCG" : hp;
+        target.lastOfficialProtocol = off;
+        target.protocolHint = off;
+        // only seed protocol when user never chose one
+        if (!target.protocol) target.protocol = off;
       }
     }
     if (spu) target.spuCode = spu;
@@ -2242,6 +3128,7 @@ function setComposerMsg(text, kind) {
   }
 
   function applyOfficialFromDesktop(target, d) {
+    /* gate6: never overwrite user-selected protocol; only record official hint */
     if (!target || !d) return;
     const hint = (
       d.protocolHint ||
@@ -2251,16 +3138,23 @@ function setComposerMsg(text, kind) {
     )
       .toString()
       .toUpperCase();
+    let off = "";
+    if (hint === "ZX" || hint === "ZHONGXING") off = "ZTE";
+    else if (hint === "SANGFOR") off = "SCG";
+    else if (hint === "ZTE" || hint === "SCG") off = hint;
     const spu = d.spuCode || d.spu_code || "";
-    if (hint) {
-      target.protocol = hint;
-      target.protocolHint = hint;
-      target.lastOfficialProtocol = hint;
+    if (off) {
+      target.lastOfficialProtocol = off;
+      target.protocolHint = off;
+      if (!target.protocol) target.protocol = off;
     }
     if (spu) target.spuCode = spu;
-    if (hint || spu) {
+    if (off || spu) {
       setComposerOfficial(
-        (hint || "未知") + (spu ? " · spu " + spu : "")
+        (off || "未知") + (spu ? " · spu " + spu : "") +
+          (target.protocol && off && target.protocol !== off
+            ? "（用户选 " + target.protocol + "）"
+            : "")
       );
     }
   }
@@ -2646,6 +3540,10 @@ function setComposerMsg(text, kind) {
       d[key] = val;
       if (key === "protocol" && val) {
         d.lastOfficialProtocol = val;
+      }
+      if (key === "clientProfile") {
+        d.clientProfile = String(val || "linux").toLowerCase();
+        persistClientProfile(pid, d.clientProfile);
       }
     }
     // seg-btn active state in config modal / cards
@@ -3138,6 +4036,11 @@ function setComposerMsg(text, kind) {
           if (btn) btn.disabled = false;
         }
       });
+    $("#btn-token") &&
+      $("#btn-token").addEventListener("click", function () {
+        openTokenDialog();
+      });
+    updateTokenBtn();
     $("#btn-clear-log") &&
       $("#btn-clear-log").addEventListener("click", function () {
         state.globalLog = [];
@@ -3411,9 +4314,38 @@ function setComposerMsg(text, kind) {
   async function boot() {
     bindCardEvents();
     wireChrome();
+    wireAccessGate();
+    wireTokenModal();
     pushGlobal("爱家移动云电脑就绪 · 多账户保活控制台");
     await loadSys();
-    await loadProfiles(true);
+    // Access gate: no server key → setup; has key but no local token → login.
+    if (state.setupRequired) {
+      showAccessGate("setup");
+      updateTokenBtn();
+      return;
+    }
+    if (state.tokenRequired && !getToken()) {
+      showAccessGate("login");
+      updateTokenBtn();
+      return;
+    }
+    try {
+      await loadProfiles(true);
+    } catch (e) {
+      const code = (e && (e.code || (e.error && e.error.code))) || "";
+      if (
+        e &&
+        (e.status === 401 ||
+          code === "AUTH_REQUIRED" ||
+          code === "TOKEN_REQUIRED" ||
+          code === "SETUP_REQUIRED")
+      ) {
+        if (code === "SETUP_REQUIRED" || state.setupRequired) showAccessGate("setup");
+        else showAccessGate("login");
+        updateTokenBtn();
+        return;
+      }
+    }
     connectSSE();
     startPolling();
   }

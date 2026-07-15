@@ -6,9 +6,53 @@
   <title>爱家移动云电脑</title>
   <meta name="color-scheme" content="light" />
   <link rel="icon" type="image/png" href="/static/logo.png?v=869a" />
-  <link rel="stylesheet" href="/static/app.css?v=873b-desk-name-center" />
+  <link rel="stylesheet" href="/static/app.css?v=871d-access-gate15" />
 </head>
 <body>
+  <!-- Access gate (8317-style): setup / login before console -->
+  <div id="access-gate" class="access-gate hidden" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="gate-title">
+    <div class="access-gate-card">
+      <div class="access-gate-brand">
+        <img class="access-gate-logo" src="/static/logo.png?v=869a" width="40" height="40" alt="" />
+        <div>
+          <h1 id="gate-title">设置访问密钥</h1>
+          <p class="access-gate-sub" id="gate-sub">首次部署可选：保护控制台，之后也可在顶栏修改。</p>
+        </div>
+      </div>
+      <div id="gate-setup-panel" class="access-gate-panel hidden">
+        <label class="field">
+          <span>访问密钥</span>
+          <div class="field-row">
+            <input type="password" id="gate-setup-input" autocomplete="new-password" placeholder="至少 4 位" />
+            <button type="button" class="btn btn-ghost btn-sm" id="gate-setup-show" aria-pressed="false" title="显示或隐藏密钥">显示密钥</button>
+          </div>
+        </label>
+        <p class="access-gate-err" id="gate-setup-err" aria-live="polite"></p>
+        <div class="access-gate-actions access-gate-actions-setup">
+          <div class="access-gate-actions-row">
+            <button type="button" class="btn btn-ghost" id="gate-setup-gen">随机生成</button>
+            <button type="button" class="btn btn-ghost" id="gate-setup-skip">不设置，直接进入</button>
+          </div>
+          <button type="button" class="btn btn-primary" id="gate-setup-ok">保存并进入</button>
+        </div>
+        <p class="access-gate-note">高级：服务器 <code>.env</code> 写 <code>CMCC_WEBUI_TOKEN</code> 后重启亦可。</p>
+      </div>
+      <div id="gate-login-panel" class="access-gate-panel hidden">
+        <label class="field">
+          <span>访问密钥</span>
+          <div class="field-row">
+            <input type="password" id="gate-login-input" autocomplete="current-password" placeholder="输入访问密钥" />
+            <button type="button" class="btn btn-ghost btn-sm" id="gate-login-show" aria-pressed="false" title="显示或隐藏密钥">显示密钥</button>
+          </div>
+        </label>
+        <p class="access-gate-err" id="gate-login-err" role="alert" aria-live="polite"></p>
+        <div class="access-gate-actions">
+          <button type="button" class="btn btn-primary" id="gate-login-ok">进入控制台</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="app" id="app">
     <header class="topbar">
       <div class="brand">
@@ -25,6 +69,7 @@
         <span class="stat stat-err" data-k="error">异常 0</span>
       </div>
       <div class="top-actions">
+        <button type="button" class="btn btn-ghost" id="btn-token" title="设置 / 修改访问密钥">设置令牌</button>
         <button type="button" class="btn btn-ghost" id="btn-refresh" title="刷新">刷新</button>
         <button type="button" class="btn btn-ghost" id="btn-help" title="查看帮助">查看帮助</button>
       </div>
@@ -201,14 +246,23 @@
   <div class="modal hidden" id="help-modal" aria-hidden="true" role="dialog" aria-modal="true">
     <div class="modal-card modal-wide">
       <h3>使用说明</h3>
-      <div class="help-body">
+            <div class="help-body">
         <p>在同一页完成账号配置与保活控制，无需向导分步。</p>
         <ul>
           <li>上方 Composer 填账号密码等，主按钮「保存并保活」。</li>
-          <li>下方卡片可并列管理多个账号：开始 / 停止 / 配置 / 桌面登出；删除账号在配置弹窗内。</li>
+          <li>下方卡片可并列管理多个账号：开始 / 停止 / 配置等；删除账号在配置弹窗内。</li>
           <li>关掉浏览器页面后，已启动的保活仍在后台运行。</li>
-          <li>客户端类型一般保持 Linux；协议选中兴或深信服。</li>
+          <li>客户端类型可选 linux / windows / mac（保存后会写进档案，不会再自动变回 linux）。</li>
+          <li>协议选中兴（ZTE）或深信服（SCG），按你的云电脑实际类型选择。</li>
+          <li>运行日志支持<strong>双击</strong>查看全部。</li>
         </ul>
+        <h4 style="margin:12px 0 6px;font-size:14px;">访问密钥</h4>
+        <p>可选。保护控制台 API，<strong>不影响保活</strong>。打开原网址即可，密钥在门页填写，<strong>不要拼进 URL</strong>。</p>
+        <ul>
+          <li>登录门输入；改密 / 清本机用顶栏「设置令牌」。</li>
+          <li>也可 <code>.env</code> 写 <code>CMCC_WEBUI_TOKEN</code>（已有 token 文件优先）。</li>
+        </ul>
+        <p class="hint">细节见 README「WebUI 访问密钥」。</p>
       </div>
       <div class="modal-actions">
         <button type="button" class="btn btn-primary" id="help-close">知道了</button>
@@ -226,7 +280,40 @@
     </div>
   </div>
 
+  <!-- gate6: token management modal (change / clear local / disable auth) -->
+  <div class="modal hidden" id="token-modal" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="token-modal-title">
+    <div class="modal-card token-modal-card">
+      <div class="modal-head">
+        <h2 id="token-modal-title">访问密钥</h2>
+        <button type="button" class="btn btn-ghost modal-x" id="token-modal-close" aria-label="关闭" title="关闭">×</button>
+      </div>
+      <p class="token-modal-status" id="token-modal-status">正在读取鉴权状态…</p>
+      <div class="token-modal-field">
+        <label for="token-modal-current">当前密钥（改密/关鉴权时需要）</label>
+        <div class="field-row">
+          <input type="password" id="token-modal-current" autocomplete="current-password" placeholder="本机已保存则自动填充" />
+          <button type="button" class="btn btn-ghost btn-sm" id="token-modal-show-current" aria-pressed="false" title="显示或隐藏密钥">显示密钥</button>
+        </div>
+      </div>
+      <div class="token-modal-field">
+        <label for="token-modal-new">新密钥（启用/改密）</label>
+        <div class="field-row">
+          <input type="password" id="token-modal-new" autocomplete="new-password" placeholder="至少 4 位，无空格" />
+          <button type="button" class="btn btn-ghost btn-sm" id="token-modal-show-new" aria-pressed="false" title="显示或隐藏密钥">显示密钥</button>
+        </div>
+      </div>
+      <div class="token-modal-actions">
+        <button type="button" class="btn btn-primary" id="token-modal-enable">启用密钥</button>
+        <button type="button" class="btn btn-primary" id="token-modal-change">修改密钥</button>
+        <button type="button" class="btn" id="token-modal-clear">仅清除本机密钥</button>
+        <button type="button" class="btn btn-danger" id="token-modal-disable">关闭服务器鉴权</button>
+      </div>
+      <p class="token-modal-err" id="token-modal-err" role="alert"></p>
+      <p class="token-modal-note">关闭鉴权后任何人可操作；「仅清除本机」只删浏览器保存的密钥。</p>
+    </div>
+  </div>
+
   <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
-  <script src="/static/app.js?v=871d-proto-serial-globallog"></script>
+  <script src="/static/app.js?v=871d-access-gate15"></script>
 </body>
 </html>

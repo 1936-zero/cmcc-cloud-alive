@@ -4863,3 +4863,410 @@ html body article.card .card-summary strong,
 }
 /* was max-width:420px → 1fr; removed so 云桌面/协议/客户端 | 模式/间隔/状态 stay 2-col */
 
+/* #871d-client-token: topbar token button */
+#btn-token.is-set {
+  border-color: rgba(46, 204, 113, 0.55);
+  color: #1e8a4c;
+}
+#btn-token.is-need {
+  border-color: rgba(231, 76, 60, 0.65);
+  color: #c0392b;
+  font-weight: 600;
+}
+@media (max-width: 720px) {
+  .top-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    width: 100%;
+  }
+  .top-actions .btn {
+    width: 100%;
+    justify-content: center;
+    min-height: 36px;
+    padding: 6px 8px;
+    font-size: 13px;
+  }
+}
+
+/* #871d-client-token: topbar 3-btn mobile OVERRIDE */
+@media (max-width: 720px) {
+  .top-actions {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr 1fr !important;
+    gap: 8px;
+    width: 100%;
+  }
+  .top-actions .btn {
+    width: 100%;
+    justify-content: center;
+    min-height: 36px;
+    padding: 6px 8px;
+    font-size: 13px;
+  }
+}
+
+
+
+/* ===== Access gate (gate12: cool white Lens SaaS — match main console) ===== */
+/* When gate is up, block interaction and collapse main console under the overlay */
+#app.gate-locked {
+  pointer-events: none;
+  user-select: none;
+  visibility: hidden;
+  height: 0 !important;
+  min-height: 0 !important;
+  max-height: 0 !important;
+  overflow: hidden !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+#access-gate.access-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(12px, 3vw, 28px) clamp(12px, 3vw, 20px);
+  background:
+    radial-gradient(900px 480px at 12% -6%, rgba(98, 95, 255, 0.07), transparent 55%),
+    radial-gradient(700px 380px at 95% 108%, rgba(141, 84, 255, 0.05), transparent 50%),
+    var(--bg-page, #fafafa);
+  box-sizing: border-box;
+}
+#access-gate.access-gate.hidden,
+#access-gate[hidden] {
+  display: none !important;
+}
+#access-gate .access-gate-card {
+  width: min(440px, 100%);
+  max-height: min(92vh, 720px);
+  overflow: auto;
+  background: var(--bg-elev, #ffffff);
+  border: 1px solid var(--border, #e7e5e4);
+  border-radius: 14px;
+  box-shadow: var(--shadow-md, 0 4px 12px rgba(24, 24, 27, 0.06)), 0 18px 40px rgba(24, 24, 27, 0.06);
+  padding: clamp(18px, 3.5vw, 28px) clamp(16px, 3.5vw, 28px) clamp(16px, 3vw, 22px);
+  box-sizing: border-box;
+  color: var(--text, #18181b);
+}
+#access-gate .access-gate-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+#access-gate .access-gate-logo {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  flex: none;
+  object-fit: cover;
+  box-shadow: var(--shadow, 0 1px 2px rgba(24, 24, 27, 0.04));
+}
+#access-gate .access-gate-brand h1,
+#access-gate #gate-title {
+  margin: 0;
+  font-size: clamp(1.05rem, 2.6vw, 1.2rem);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--text, #18181b);
+  line-height: 1.3;
+}
+#access-gate .access-gate-sub,
+#access-gate #gate-sub {
+  margin: 4px 0 0;
+  font-size: 0.86rem;
+  color: var(--text-dim, #79716b);
+  line-height: 1.45;
+}
+#access-gate .access-gate-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+#access-gate .access-gate-panel.hidden {
+  display: none !important;
+}
+#access-gate .access-gate-hint {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--text-dim, #79716b);
+}
+#access-gate .access-gate-note {
+  margin: 2px 0 0;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--text-soft, #a8a29e);
+}
+#access-gate .access-gate-note code {
+  font-size: 0.72rem;
+  background: var(--bg-soft, #f4f4f5);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--text-dim, #79716b);
+  border: 1px solid var(--border, #e7e5e4);
+}
+#access-gate .access-gate-err {
+  min-height: 0;
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--danger, #e40014);
+  line-height: 1.4;
+}
+#access-gate .access-gate-err:empty {
+  display: none;
+}
+#access-gate .field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+#access-gate .field > span {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-dim, #79716b);
+}
+#access-gate .field-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+}
+#access-gate .field-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--border, #e7e5e4);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--text, #18181b);
+  font-size: 0.95rem;
+  box-sizing: border-box;
+}
+#access-gate .field-row input:focus {
+  outline: none;
+  border-color: var(--accent, #625fff);
+  box-shadow: 0 0 0 3px var(--accent-ring, rgba(98, 95, 255, 0.22));
+}
+#access-gate .field-row .btn-sm,
+#access-gate .field-row #gate-setup-show,
+#access-gate .field-row #gate-login-show {
+  flex: 0 0 auto;
+  height: 40px;
+  min-width: 88px;
+  padding: 0 12px;
+  white-space: nowrap;
+  border-radius: 10px;
+  font-size: 0.82rem;
+}
+/* actions: setup = row of 2 ghosts + primary full width */
+#access-gate .access-gate-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
+#access-gate .access-gate-actions-row {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  width: 100%;
+}
+#access-gate .access-gate-actions-row .btn {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 40px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#access-gate .access-gate-actions > .btn-primary,
+#access-gate .access-gate-actions #gate-setup-ok,
+#access-gate .access-gate-actions #gate-login-ok {
+  width: 100%;
+  height: 42px;
+  flex: none;
+  font-weight: 600;
+}
+/* login panel: single primary full width */
+#access-gate .access-gate-actions-login {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* token modal — same cool white system */
+#token-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(12px, 3vw, 24px) clamp(12px, 3vw, 16px);
+  background: rgba(24, 24, 27, 0.40);
+  box-sizing: border-box;
+}
+#token-modal[hidden],
+#token-modal.hidden {
+  display: none !important;
+}
+#token-modal .token-modal-card,
+#token-modal .modal-card {
+  width: min(440px, 100%);
+  max-height: min(92vh, 680px);
+  overflow: auto;
+  background: var(--bg-elev, #ffffff);
+  border: 1px solid var(--border, #e7e5e4);
+  border-radius: 14px;
+  box-shadow: var(--shadow-md, 0 4px 12px rgba(24, 24, 27, 0.06)), 0 18px 40px rgba(24, 24, 27, 0.10);
+  padding: clamp(16px, 3vw, 22px) clamp(14px, 3vw, 22px) clamp(14px, 2.5vw, 18px);
+  box-sizing: border-box;
+  color: var(--text, #18181b);
+}
+#token-modal .modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+#token-modal .modal-head h2 {
+  margin: 0;
+  font-size: clamp(1rem, 2.5vw, 1.1rem);
+  color: var(--text, #18181b);
+}
+#token-modal .modal-x {
+  min-width: 36px;
+  height: 36px;
+  padding: 0;
+  font-size: 1.2rem;
+  line-height: 1;
+}
+#token-modal .token-modal-status {
+  margin: 0 0 12px;
+  font-size: 0.86rem;
+  color: var(--text-dim, #79716b);
+  line-height: 1.45;
+}
+#token-modal .token-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+#token-modal .token-modal-field > label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-dim, #79716b);
+}
+#token-modal .field-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+#token-modal .field-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--border, #e7e5e4);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--text, #18181b);
+  font-size: 0.95rem;
+  box-sizing: border-box;
+}
+#token-modal .field-row input:focus {
+  outline: none;
+  border-color: var(--accent, #625fff);
+  box-shadow: 0 0 0 3px var(--accent-ring, rgba(98, 95, 255, 0.22));
+}
+#token-modal .field-row .btn-sm {
+  flex: 0 0 auto;
+  height: 40px;
+  min-width: 88px;
+  padding: 0 12px;
+  white-space: nowrap;
+  border-radius: 10px;
+  font-size: 0.82rem;
+}
+#token-modal .token-modal-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+#token-modal .token-modal-actions .btn {
+  width: 100%;
+  height: 40px;
+  flex: none;
+}
+#token-modal .token-modal-err {
+  margin: 8px 0 0;
+  font-size: 0.82rem;
+  color: var(--danger, #e40014);
+  min-height: 0;
+}
+#token-modal .token-modal-err:empty { display: none; }
+#token-modal .token-modal-note {
+  margin: 12px 0 0;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--text-soft, #a8a29e);
+}
+
+/* desktop: slightly roomier card */
+@media (min-width: 900px) {
+  #access-gate .access-gate-card,
+  #token-modal .token-modal-card,
+  #token-modal .modal-card {
+    width: min(460px, 100%);
+  }
+}
+
+/* tablet / phone: keep ghost row side-by-side when possible */
+@media (max-width: 480px) {
+  #access-gate .access-gate-card,
+  #token-modal .token-modal-card,
+  #token-modal .modal-card {
+    border-radius: 12px;
+  }
+  #access-gate .field-row .btn-sm,
+  #access-gate .field-row #gate-setup-show,
+  #access-gate .field-row #gate-login-show,
+  #token-modal .field-row .btn-sm {
+    min-width: 80px;
+    padding: 0 10px;
+    font-size: 0.8rem;
+  }
+}
+
+/* very narrow: stack secondary actions */
+@media (max-width: 380px) {
+  #access-gate .access-gate-actions-row {
+    flex-direction: column;
+  }
+  #access-gate .access-gate-actions-row .btn {
+    width: 100%;
+  }
+  #access-gate .field-row {
+    flex-wrap: wrap;
+  }
+  #access-gate .field-row .btn-sm,
+  #access-gate .field-row #gate-setup-show,
+  #access-gate .field-row #gate-login-show {
+    width: 100%;
+  }
+  #token-modal .field-row {
+    flex-wrap: wrap;
+  }
+  #token-modal .field-row .btn-sm {
+    width: 100%;
+  }
+}

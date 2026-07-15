@@ -253,14 +253,111 @@ def parse_job_timing_fields(body: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Token middleware (optional CMCC_WEBUI_TOKEN)
+# Access token gate (file > env; 8317-style login shell)
 # ---------------------------------------------------------------------------
 
+_ACCESS_TOKEN_FILENAME = "webui_access_token"
+
+
+def _access_token_path() -> Path:
+    return _data_dir() / _ACCESS_TOKEN_FILENAME
+
+
+def _read_access_token() -> str:
+    """Resolve expected WebUI access token.
+
+    Priority:
+    1. durable file under data dir (UI setup / change)
+    2. CMCC_WEBUI_TOKEN env (.env / compose)
+    """
+    try:
+        p = _access_token_path()
+        if p.is_file():
+            raw = p.read_text(encoding="utf-8", errors="replace").strip()
+            # accept single-line token only; ignore comments/blank
+            for line in raw.splitlines():
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                return s
+    except OSError:
+        pass
+    return (os.environ.get("CMCC_WEBUI_TOKEN") or "").strip()
+
+
+def _write_access_token(token: str) -> Path:
+    """Persist access token to data dir (mode 0600). Returns path."""
+    token = (token or "").strip()
+    if not token:
+        raise ValueError("empty token")
+    if len(token) < 4:
+        raise ValueError("token too short (min 4)")
+    if len(token) > 256:
+        raise ValueError("token too long (max 256)")
+    # reject whitespace / control chars
+    if any(c.isspace() for c in token):
+        raise ValueError("token must not contain whitespace")
+    root = _data_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    path = _access_token_path()
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(token + "\n", encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    tmp.replace(path)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return path
+
+
+def _clear_access_token() -> Path:
+    """Remove file-based access token (disable gate). Env CMCC_WEBUI_TOKEN still wins if set."""
+    path = _access_token_path()
+    try:
+        if path.is_file():
+            path.unlink()
+    except OSError as e:
+        raise OSError(f"无法删除访问密钥文件: {e}") from e
+    return path
+
+
+def _extract_request_token(request: Request) -> str:
+    auth = request.headers.get("authorization") or ""
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return (
+        request.headers.get("x-api-token")
+        or request.query_params.get("token")
+        or ""
+    ).strip()
+
+
+def _token_ok(provided: str, expected: str) -> bool:
+    if not expected or not provided:
+        return False
+    # secrets.compare_digest requires equal length; pad-safe via hmac style length check
+    try:
+        return secrets.compare_digest(provided, expected)
+    except (TypeError, ValueError):
+        return False
+
+
 class OptionalTokenMiddleware(BaseHTTPMiddleware):
+    """Gate business APIs behind access token (file or env).
+
+    Open always: shell HTML, static, health, system/info, auth setup/login/status.
+    gate6:
+    - no token configured → open access (auth disabled)
+    - token configured → require valid Bearer / x-api-token / ?token=
+    """
+
     async def dispatch(self, request: Request, call_next):
-        expected = os.environ.get("CMCC_WEBUI_TOKEN") or ""
         path = request.url.path
-        # Always open: health aliases (compose/X2/T3) + static + root shell
+        # Always open: health aliases (compose/X2/T3) + static + root shell + auth bootstrap
         # FLAG#59: /api/health must match docker HEALTHCHECK
         open_exact = {
             "/",
@@ -268,27 +365,29 @@ class OptionalTokenMiddleware(BaseHTTPMiddleware):
             "/health",
             "/api/health",
             "/api/system/health",
-            # X9: allow FE to discover tokenRequired before Bearer/localStorage is set
+            # X9: allow FE to discover tokenRequired / setupRequired before Bearer set
             "/api/system/info",
             "/api/info",
+            "/api/auth/status",
+            "/api/auth/setup",
+            "/api/auth/login",
         }
         open_prefixes = ("/static/", "/favicon")
         if path in open_exact or path.startswith(open_prefixes):
             return await call_next(request)
+
+        expected = _read_access_token()
+        # gate6: no token configured → open access (auth disabled)
         if not expected:
             return await call_next(request)
-        auth = request.headers.get("authorization") or ""
-        token = ""
-        if auth.lower().startswith("bearer "):
-            token = auth[7:].strip()
-        if not token:
-            token = request.headers.get("x-api-token") or request.query_params.get("token") or ""
-        if not secrets.compare_digest(token, expected):
+
+        token = _extract_request_token(request)
+        if not _token_ok(token, expected):
             return api_error(
-                "AUTH_FAILED",
-                "invalid or missing CMCC_WEBUI_TOKEN",
+                "TOKEN_INVALID",
+                "访问密钥无效或缺失",
                 401,
-                next_step="请在请求头携带有效 Bearer/CMCC_WEBUI_TOKEN 后重试",
+                next_step="请在登录门输入正确访问密钥，或在请求头携带 Bearer / x-api-token",
             )
         return await call_next(request)
 
@@ -575,6 +674,39 @@ def _sync_shared_account(state: Dict[str, Any]) -> Optional[Path]:
     return shared
 
 
+
+def _normalize_client_profile(value: Any, default: str = "linux") -> str:
+    """Accept linux|windows|mac (case-insensitive); invalid → default."""
+    v = str(value or "").strip().lower()
+    if v in ("linux", "windows", "mac"):
+        return v
+    return default
+
+
+def _apply_client_profile_from_body(state: Dict[str, Any], body: Optional[Dict[str, Any]]) -> bool:
+    """If body carries clientProfile, write normalized value onto card state.
+
+    Returns True when state was changed.
+    """
+    if not isinstance(body, dict) or "clientProfile" not in body:
+        return False
+    raw = body.get("clientProfile")
+    if raw is None or str(raw).strip() == "":
+        return False
+    new_v = _normalize_client_profile(raw, default="")
+    if not new_v:
+        return False
+    old = _normalize_client_profile(state.get("clientProfile"), default="")
+    if old == new_v:
+        # still ensure canonical form
+        if state.get("clientProfile") != new_v:
+            state["clientProfile"] = new_v
+            return True
+        return False
+    state["clientProfile"] = new_v
+    return True
+
+
 def _hydrate_profile_from_shared(state: Dict[str, Any]) -> Dict[str, Any]:
     """Fill missing token/password from shared account file (card keeps own usid)."""
     username = str(state.get("username") or state.get("phone") or "").strip()
@@ -657,7 +789,7 @@ def _public_profile(profile_id: str, state: Dict[str, Any], path: Path) -> Dict[
         "tokenPresent": bool(state.get("sohoToken") or state.get("token")),
         "isSubAccount": bool(state.get("isSubAccount")),
         "loginMode": state.get("loginMode") or ("sub" if state.get("isSubAccount") else "main"),
-        "clientProfile": state.get("clientProfile") or "linux",
+        "clientProfile": _normalize_client_profile(state.get("clientProfile"), default="linux"),
         "draft": bool(state.get("draft")),
         "jobStatus": job_status,
         "jobId": st.get("jobId"),
@@ -717,6 +849,15 @@ async def health(request: Request) -> JSONResponse:
 
 
 async def system_info(request: Request) -> JSONResponse:
+    expected = _read_access_token()
+    has_file = False
+    try:
+        has_file = _access_token_path().is_file() and bool(
+            _access_token_path().read_text(encoding="utf-8", errors="replace").strip()
+        )
+    except OSError:
+        has_file = False
+    has_env = bool((os.environ.get("CMCC_WEBUI_TOKEN") or "").strip())
     return JSONResponse(
         {
             "ok": True,
@@ -725,9 +866,195 @@ async def system_info(request: Request) -> JSONResponse:
             "profilesDir": str(profiles_dir()),
             "cliCallable": True,  # package present; not probing LIVE
             # Footer: "服务 cmcc-cloud-alive · v{version}" — align with WebUI baseline id.
-            "version": "0.1.0-webui-871d-proto-serial-globallog",
-            "tokenRequired": bool(os.environ.get("CMCC_WEBUI_TOKEN")),
+            "version": "0.1.0-webui-871d-access-gate15",
+            "tokenRequired": bool(expected),
+            # gate6: empty token = open access; setup is optional (not forced)
+            "setupRequired": False,
+            "authEnabled": bool(expected),
+            "tokenSource": ("file" if has_file else ("env" if has_env else "none")),
             "orchestrator": type(ORCH).__name__,
+        }
+    )
+
+
+async def auth_status(request: Request) -> JSONResponse:
+    """Public: whether setup/login is needed (no secret leaked)."""
+    expected = _read_access_token()
+    provided = _extract_request_token(request)
+    authed = (not expected) or _token_ok(provided, expected)
+    return JSONResponse(
+        {
+            "ok": True,
+            # gate6: no forced first-run; empty token = auth off
+            "setupRequired": False,
+            "tokenRequired": bool(expected),
+            "authEnabled": bool(expected),
+            "authenticated": authed,
+            "version": "0.1.0-webui-871d-access-gate15",
+        }
+    )
+
+
+async def auth_setup(request: Request) -> JSONResponse:
+    """First-run: create durable access token when none configured yet."""
+    if _read_access_token():
+        return api_error(
+            "ALREADY_CONFIGURED",
+            "访问密钥已存在，请使用登录或「设置令牌」修改",
+            409,
+            next_step="在登录页输入现有密钥；修改请点顶栏「设置令牌」",
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    generate = bool(body.get("generate"))
+    token = str(body.get("token") or body.get("accessToken") or "").strip()
+    if generate or not token:
+        token = secrets.token_urlsafe(18)
+    try:
+        path = _write_access_token(token)
+    except ValueError as e:
+        return api_error("VALIDATION", str(e), 400, next_step="请提供 4–256 位无空格密钥，或使用 generate")
+    except OSError as e:
+        return api_error("IO_ERROR", f"写入密钥失败: {e}", 500, next_step="检查数据目录写权限")
+    return JSONResponse(
+        {
+            "ok": True,
+            "setup": True,
+            "token": token,
+            "path": str(path),
+            "message": "访问密钥已写入数据目录，请妥善保存；后续登录需此密钥",
+        }
+    )
+
+
+async def auth_login(request: Request) -> JSONResponse:
+    """Validate access token (does not create sessions server-side; FE stores Bearer)."""
+    expected = _read_access_token()
+    if not expected:
+        # gate6: auth disabled — treat as success so FE can enter console
+        return JSONResponse(
+            {
+                "ok": True,
+                "authenticated": True,
+                "authEnabled": False,
+                "message": "未启用访问密钥，已直接进入控制台",
+            }
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    token = str(body.get("token") or body.get("accessToken") or "").strip()
+    if not token:
+        token = _extract_request_token(request)
+    if not _token_ok(token, expected):
+        return api_error(
+            "TOKEN_INVALID",
+            "访问密钥错误",
+            401,
+            next_step="请检查密钥是否与服务器一致（数据目录 webui_access_token 或 CMCC_WEBUI_TOKEN）",
+        )
+    return JSONResponse({"ok": True, "authenticated": True, "token": token})
+
+
+async def auth_change(request: Request) -> JSONResponse:
+    """Change access token (requires current valid Bearer; writes file).
+
+    gate6: when no token configured yet, allow first enable without currentToken.
+    """
+    expected = _read_access_token()
+    current = _extract_request_token(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    # allow body.currentToken as alternative to Authorization
+    body_current = str(body.get("currentToken") or body.get("oldToken") or "").strip()
+    if body_current:
+        current = body_current
+    if expected and not _token_ok(current, expected):
+        return api_error(
+            "TOKEN_INVALID",
+            "当前访问密钥错误，无法修改",
+            401,
+            next_step="请输入正确的当前密钥后再改密",
+        )
+    generate = bool(body.get("generate"))
+    new_token = str(body.get("token") or body.get("newToken") or body.get("accessToken") or "").strip()
+    if generate or not new_token:
+        new_token = secrets.token_urlsafe(18)
+    try:
+        path = _write_access_token(new_token)
+    except ValueError as e:
+        return api_error("VALIDATION", str(e), 400, next_step="新密钥需 4–256 位且无空格")
+    except OSError as e:
+        return api_error("IO_ERROR", f"写入密钥失败: {e}", 500, next_step="检查数据目录写权限")
+    return JSONResponse(
+        {
+            "ok": True,
+            "changed": True,
+            "authEnabled": True,
+            "token": new_token,
+            "path": str(path),
+            "message": "访问密钥已更新（写入数据目录，优先于环境变量）",
+        }
+    )
+
+
+async def auth_disable(request: Request) -> JSONResponse:
+    """Disable access-token gate by deleting file token (env CMCC_WEBUI_TOKEN still wins)."""
+    expected = _read_access_token()
+    has_env = bool((os.environ.get("CMCC_WEBUI_TOKEN") or "").strip())
+    if has_env and not _access_token_path().is_file():
+        return api_error(
+            "ENV_TOKEN",
+            "当前密钥来自环境变量 CMCC_WEBUI_TOKEN，无法通过本接口关闭",
+            400,
+            next_step="请取消环境变量或改用文件密钥后再关闭鉴权",
+        )
+    if expected:
+        current = _extract_request_token(request)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        body_current = str(body.get("currentToken") or body.get("oldToken") or body.get("token") or "").strip()
+        if body_current:
+            current = body_current
+        if not _token_ok(current, expected):
+            return api_error(
+                "TOKEN_INVALID",
+                "当前访问密钥错误，无法关闭鉴权",
+                401,
+                next_step="请输入正确的当前密钥后再关闭",
+            )
+    try:
+        path = _clear_access_token()
+    except OSError as e:
+        return api_error("IO_ERROR", str(e), 500, next_step="检查数据目录写权限")
+    # If env still set, report residual auth
+    still = _read_access_token()
+    return JSONResponse(
+        {
+            "ok": True,
+            "disabled": not bool(still),
+            "authEnabled": bool(still),
+            "path": str(path),
+            "message": (
+                "已关闭访问鉴权（删除文件密钥）"
+                if not still
+                else "已删除文件密钥，但仍受环境变量 CMCC_WEBUI_TOKEN 约束"
+            ),
         }
     )
 
@@ -746,9 +1073,11 @@ async def profiles_create(request: Request) -> JSONResponse:
     display = (body.get("displayName") or body.get("name") or "").strip()
     username = (body.get("username") or "").strip()
     password = body.get("password")  # write-only
-    client_profile = (body.get("clientProfile") or "linux").strip() or "linux"
-    if client_profile not in ("linux", "windows", "mac"):
+    client_profile = _normalize_client_profile(body.get("clientProfile"), default="linux")
+    if str(body.get("clientProfile") or "").strip() and client_profile not in ("linux", "windows", "mac"):
         return api_error("VALIDATION", "clientProfile must be linux|windows|mac")
+    if client_profile not in ("linux", "windows", "mac"):
+        client_profile = "linux"
     base = _safe_profile_id(display or username or f"p-{uuid.uuid4().hex[:8]}")
     pid = base
     n = 2
@@ -864,6 +1193,76 @@ def _password_login_for_profile(
     )
 
 
+
+async def profiles_patch(request: Request) -> JSONResponse:
+    """Partial update for card UI meta (clientProfile / displayName / protocol draft).
+
+    Does not touch live session tokens except via explicit body keys already
+    handled by login. Used by FE when user toggles 客户端 segment so the choice
+    survives refresh without requiring a full re-login.
+    """
+    pid = request.path_params["profile_id"]
+    path = _profile_path(pid)
+    if not path.is_file():
+        return api_error("NOT_FOUND", f"profile {pid} not found", 404)
+    try:
+        body = await request.json()
+    except Exception:
+        return api_error("VALIDATION", "JSON body required")
+    if not isinstance(body, dict):
+        return api_error("VALIDATION", "JSON object required")
+    state = _read_state(path)
+    changed = False
+    if "clientProfile" in body:
+        raw = body.get("clientProfile")
+        if raw is None or str(raw).strip() == "":
+            return api_error("VALIDATION", "clientProfile must be linux|windows|mac")
+        new_v = _normalize_client_profile(raw, default="")
+        if new_v not in ("linux", "windows", "mac"):
+            return api_error("VALIDATION", "clientProfile must be linux|windows|mac")
+        if state.get("clientProfile") != new_v:
+            state["clientProfile"] = new_v
+            changed = True
+        else:
+            state["clientProfile"] = new_v  # canonicalize
+            changed = True
+    if "displayName" in body and body.get("displayName") is not None:
+        dn = str(body.get("displayName") or "").strip()
+        if dn and state.get("displayName") != dn:
+            state["displayName"] = dn
+            changed = True
+    if "protocol" in body and body.get("protocol") is not None:
+        # store user choice only; resolve_user_protocol remains source at start
+        proto = str(body.get("protocol") or "").strip().upper()
+        if proto:
+            if proto in ("ZX", "ZHONGXING"):
+                proto = "ZTE"
+            if proto == "SANGFOR":
+                proto = "SCG"
+            if proto in ("ZTE", "SCG") and state.get("protocol") != proto:
+                state["protocol"] = proto
+                changed = True
+    if not changed and "clientProfile" not in body:
+        return api_error("VALIDATION", "no supported fields to patch", 400)
+    state["updatedAt"] = _now_iso()
+    _write_state(path, state)
+    try:
+        _sync_shared_account(state)
+    except Exception:
+        pass
+    # re-read + hydrate for response consistency with GET
+    state2 = _read_state(path)
+    try:
+        state2 = _hydrate_profile_from_shared(state2)
+    except Exception:
+        pass
+    # card-level clientProfile must win over shared hydrate defaults
+    if state.get("clientProfile"):
+        state2["clientProfile"] = state["clientProfile"]
+    pub = _public_profile(pid, state2, path)
+    return JSONResponse({"ok": True, "profile": pub})
+
+
 async def profiles_login(request: Request) -> JSONResponse:
     """Save credentials and attempt LIVE cloud login (sohoToken).
 
@@ -913,6 +1312,9 @@ async def profiles_login(request: Request) -> JSONResponse:
     )
     state["loginMode"] = login_mode
     state["isSubAccount"] = login_mode == "sub"
+    # HARD_GATE#871d-client-token: persist clientProfile from UI (card/composer)
+    if _apply_client_profile_from_body(state, body):
+        state["updatedAt"] = _now_iso()
     if not username and not (state.get("sohoToken") or state.get("token")):
         return api_error(
             "VALIDATION",
@@ -1372,10 +1774,26 @@ async def profiles_start_job(request: Request) -> JSONResponse:
     state = _read_state(path)
     # HARD_GATE#871c: user protocol choice — body → profile → ZTE empty-only
     protocol = resolve_user_protocol(body.get("protocol"), state)
+    # HARD_GATE#871d-client-token: persist clientProfile before spawn (card + shared)
+    changed = False
+    if _apply_client_profile_from_body(state, body):
+        changed = True
     if state.get("draft"):
         state.pop("draft", None)
+        changed = True
+    if not state.get("clientProfile"):
+        state["clientProfile"] = _normalize_client_profile(
+            body.get("clientProfile") if isinstance(body, dict) else None,
+            default="linux",
+        )
+        changed = True
+    if changed:
         state["updatedAt"] = _now_iso()
         _write_state(path, state)
+        try:
+            _sync_shared_account(state)
+        except Exception:
+            pass
     # HARD_GATE#868: card keeps UI meta; live child uses shared acct_*.json token
     # and --user-service-id from THIS card (not from shared, avoids dual-card race).
     usid = (
@@ -1921,10 +2339,17 @@ routes = [
     Route("/api/system/info", endpoint=system_info),
     # X8 alias: OPEN gates mention /api/info
     Route("/api/info", endpoint=system_info),
+    # Access gate (8317-style): public status/setup/login; change requires current token
+    Route("/api/auth/status", endpoint=auth_status, methods=["GET"]),
+    Route("/api/auth/setup", endpoint=auth_setup, methods=["POST"]),
+    Route("/api/auth/login", endpoint=auth_login, methods=["POST"]),
+    Route("/api/auth/change", endpoint=auth_change, methods=["POST"]),
+    Route("/api/auth/disable", endpoint=auth_disable, methods=["POST"]),
     # X2 §3 profiles
     Route("/api/profiles", endpoint=profiles_list, methods=["GET"]),
     Route("/api/profiles", endpoint=profiles_create, methods=["POST"]),
     Route("/api/profiles/{profile_id}", endpoint=profiles_get, methods=["GET"]),
+    Route("/api/profiles/{profile_id}", endpoint=profiles_patch, methods=["PATCH"]),
     Route("/api/profiles/{profile_id}", endpoint=profiles_delete, methods=["DELETE"]),
     Route("/api/profiles/{profile_id}/login", endpoint=profiles_login, methods=["POST"]),
     Route("/api/profiles/{profile_id}/desktops", endpoint=profiles_desktops, methods=["GET"]),
