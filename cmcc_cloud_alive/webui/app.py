@@ -725,7 +725,7 @@ async def system_info(request: Request) -> JSONResponse:
             "profilesDir": str(profiles_dir()),
             "cliCallable": True,  # package present; not probing LIVE
             # Footer: "服务 cmcc-cloud-alive · v{version}" — align with WebUI baseline id.
-            "version": "0.1.0-webui-871d-relogin-serial1",
+            "version": "0.1.0-webui-871d-proto-serial-globallog",
             "tokenRequired": bool(os.environ.get("CMCC_WEBUI_TOKEN")),
             "orchestrator": type(ORCH).__name__,
         }

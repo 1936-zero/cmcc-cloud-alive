@@ -541,7 +541,8 @@ class Orchestrator:
         self._by_profile: Dict[str, str] = {}
         # userServiceId -> job_id (same desktop must not stack across cards)
         self._by_usid: Dict[str, str] = {}
-        # same-account SCG first-connect serial: accountKey -> {jobId, t0}
+        # same-account+same-protocol first-connect serial: "acct|proto" -> {jobId, t0, protocol}
+        # HARD_GATE#871d-proto-serial1: cross-protocol (SCG vs ZTE) does NOT share the gate.
         self._account_scg_gate: Dict[str, Dict[str, Any]] = {}
         self._log_buffers: Dict[str, List[Dict[str, str]]] = {}
         self._last_log_line: Dict[str, str] = {}
@@ -767,21 +768,32 @@ class Orchestrator:
         state_path = Path(state_path)
 
         # HARD_GATE#871d-acct-serial1: same-account SCG live first-connect serial.
+        # HARD_GATE#871d-acct-serial2: extend first-connect serial to ZTE live as well.
+        # HARD_GATE#871d-proto-serial1: gate key = account|protocol — cross-protocol no wait.
         # HARD_GATE#871d-relogin-serial1: token/auth same-account re-login flock (see token.py).
-        # Dual-card same login thrash platform session if MAIN_INIT races; stagger ~75s.
-        # dry-run / ZTE skip. Blocks caller thread (app must asyncio.to_thread).
+        # Dual-card same login+same protocol thrash platform session if first-connect races; stagger ~75s.
+        # dry-run skip. Blocks caller thread (app must asyncio.to_thread).
         account_key = ""
-        if protocol == "SCG" and mode == "live":
+        gate_key = ""
+        if protocol in ("SCG", "ZTE") and mode == "live":
             account_key = _account_key_from_state(state_path)
             if account_key:
-                serial_sec = float(os.environ.get("CMCC_SCG_ACCOUNT_SERIAL_SEC", "75") or "75")
+                # same-account + same-protocol only; SCG vs ZTE run in parallel
+                gate_key = f"{account_key}|{protocol}"
+                serial_sec = float(
+                    os.environ.get(
+                        "CMCC_ACCOUNT_SERIAL_SEC",
+                        os.environ.get("CMCC_SCG_ACCOUNT_SERIAL_SEC", "75"),
+                    )
+                    or "75"
+                )
                 if serial_sec < 0:
                     serial_sec = 0.0
-                # wait until previous same-account SCG job's first-connect window ends
+                # wait until previous same-account+same-protocol live job's first-connect window ends
                 while serial_sec > 0:
                     wait_more = 0.0
                     with self._lock:
-                        gate = self._account_scg_gate.get(account_key)
+                        gate = self._account_scg_gate.get(gate_key)
                         if not gate:
                             break
                         other_jid = str(gate.get("jobId") or "")
@@ -794,10 +806,10 @@ class Orchestrator:
                             or other.get("status") not in ("running", "pending")
                             or elapsed >= serial_sec
                         ):
-                            if gate is self._account_scg_gate.get(account_key):
+                            if gate is self._account_scg_gate.get(gate_key):
                                 # only drop if still same gate entry
                                 if not other or other.get("status") not in ("running", "pending"):
-                                    self._account_scg_gate.pop(account_key, None)
+                                    self._account_scg_gate.pop(gate_key, None)
                             break
                         # same profile re-entry handled by PROFILE_IN_USE later
                         if other and other.get("profileId") == profile_id:
@@ -858,11 +870,16 @@ class Orchestrator:
                 self._by_usid[usid] = job_id
             if account_key:
                 job["accountKey"] = account_key
-                if protocol == "SCG" and mode == "live":
-                    self._account_scg_gate[account_key] = {
+                if protocol in ("SCG", "ZTE") and mode == "live":
+                    # HARD_GATE#871d-proto-serial1: key includes protocol
+                    gk = gate_key or f"{account_key}|{protocol}"
+                    job["serialGateKey"] = gk
+                    self._account_scg_gate[gk] = {
                         "jobId": job_id,
                         "t0": time.time(),
                         "profileId": profile_id,
+                        "protocol": protocol,
+                        "accountKey": account_key,
                     }
             self._log_buffers.setdefault(job_id, [])
             stop_evt = threading.Event()
@@ -913,10 +930,18 @@ class Orchestrator:
                     fail_usid = (j.get("userServiceId") or "").strip()
                     if fail_usid and self._by_usid.get(fail_usid) == job_id:
                         self._by_usid.pop(fail_usid, None)
-                    fail_ak = (j.get("accountKey") or "").strip()
-                    gate = self._account_scg_gate.get(fail_ak) if fail_ak else None
+                    fail_gk = (j.get("serialGateKey") or "").strip()
+                    if not fail_gk:
+                        # legacy fallback: pre-proto-serial used bare accountKey
+                        fail_ak = (j.get("accountKey") or "").strip()
+                        fail_proto = (j.get("protocol") or "").strip()
+                        if fail_ak and fail_proto:
+                            fail_gk = f"{fail_ak}|{fail_proto}"
+                        else:
+                            fail_gk = fail_ak
+                    gate = self._account_scg_gate.get(fail_gk) if fail_gk else None
                     if gate and gate.get("jobId") == job_id:
-                        self._account_scg_gate.pop(fail_ak, None)
+                        self._account_scg_gate.pop(fail_gk, None)
                 self._stop_events.pop(job_id, None)
             self._append_log(job_id, f"[orch] start failed: {e}")
             self._emit(
@@ -1050,10 +1075,18 @@ class Orchestrator:
             usid = (job.get("userServiceId") or "").strip()
             if usid and self._by_usid.get(usid) == job_id:
                 self._by_usid.pop(usid, None)
-            ak = (job.get("accountKey") or "").strip()
-            gate = self._account_scg_gate.get(ak) if ak else None
+            gk = (job.get("serialGateKey") or "").strip()
+            if not gk:
+                # legacy fallback: pre-proto-serial used bare accountKey
+                ak = (job.get("accountKey") or "").strip()
+                proto = (job.get("protocol") or "").strip()
+                if ak and proto:
+                    gk = f"{ak}|{proto}"
+                else:
+                    gk = ak
+            gate = self._account_scg_gate.get(gk) if gk else None
             if gate and gate.get("jobId") == job_id:
-                self._account_scg_gate.pop(ak, None)
+                self._account_scg_gate.pop(gk, None)
             out = dict(job)
             self._backends.pop(job_id, None)
             self._stop_events.pop(job_id, None)

@@ -496,15 +496,16 @@
   }
 
 
-  function renderGlobalLog() {
-    const box = $("#global-log");
-    if (!box) return;
-    const lines = state.globalLog.slice(-200);
-    if (!lines.length) {
-      box.innerHTML = '<div class="log-empty">暂无日志</div>';
-      return;
+  // HARD_GATE#871d-proto-serial-globallog: global run-log HTML (viewport last-N or full modal)
+  function globalLogsHtml(opts) {
+    opts = opts || {};
+    const full = !!opts.full;
+    const lines = state.globalLog || [];
+    const slice = full ? lines.slice() : lines.slice(-200);
+    if (!slice.length) {
+      return '<div class="log-empty">暂无日志</div>';
     }
-    box.innerHTML = lines
+    return slice
       .map(function (x) {
         const t = shanghaiHms(x.at) || shanghaiHms(Date.now()) || "";
         return (
@@ -518,7 +519,31 @@
         );
       })
       .join("");
+  }
+
+  function renderGlobalLog() {
+    const box = $("#global-log");
+    if (!box) return;
+    box.innerHTML = globalLogsHtml({ full: false });
     box.scrollTop = box.scrollHeight;
+    // keep full modal in sync when open on global log
+    if (state.logModalPid === "__global__") {
+      const body = $("#log-full-body");
+      const modal = $("#log-modal") || $("#log-full-modal");
+      if (
+        body &&
+        modal &&
+        !modal.classList.contains("hidden") &&
+        modal.getAttribute("aria-hidden") !== "true"
+      ) {
+        const mfp = "full:g:" + String((state.globalLog || []).length);
+        if (body.getAttribute("data-log-fp") !== mfp) {
+          body.innerHTML = globalLogsHtml({ full: true });
+          body.setAttribute("data-log-fp", mfp);
+          body.scrollTop = body.scrollHeight;
+        }
+      }
+    }
   }
 
   function renderStats() {
@@ -694,28 +719,46 @@
   function openLogModal(pid) {
     if (!pid) return;
     const el = ensureLogModal();
-    const p = (state.profiles || []).find(function (x) {
-      return x && x.id === pid;
-    });
-    const d = ensureDraft(pid, p || {});
-    const name =
-      (p && (p.displayName || p.usernameMasked || p.username)) || pid;
-    const usid = (d && d.userServiceId) || (p && p.userServiceId) || "";
     const title = el.querySelector("#log-full-title");
-    if (title) {
-      title.textContent =
-        "完整日志 · " + name + (usid ? " · 桌面 " + usid : "");
-    }
     const body = el.querySelector("#log-full-body");
-    if (body) body.innerHTML = profileLogsHtml(pid, { full: true });
-    // HARD_GATE#810: force visible vs CSS .log-full-modal / [hidden] / .is-hidden
-    // HARD_GATE#827: scroll lock + return focus; close must reverse cleanly
-    state.logModalReturnFocus =
-      document.activeElement && document.activeElement !== document.body
-        ? document.activeElement
-        : document.querySelector('.log-panel[data-pid="' + pid + '"]') ||
-          document.querySelector('.card[data-pid="' + pid + '"] .log-panel') ||
-          null;
+    // HARD_GATE#871d-proto-serial-globallog: pid === "__global__" → 运行日志全量
+    if (pid === "__global__") {
+      if (title) title.textContent = "完整日志 · 运行日志";
+      if (body) {
+        body.innerHTML = globalLogsHtml({ full: true });
+        body.setAttribute(
+          "data-log-fp",
+          "full:g:" + String((state.globalLog || []).length)
+        );
+      }
+      state.logModalReturnFocus =
+        document.activeElement && document.activeElement !== document.body
+          ? document.activeElement
+          : document.querySelector("#global-log") ||
+            document.querySelector(".global-log-panel") ||
+            null;
+    } else {
+      const p = (state.profiles || []).find(function (x) {
+        return x && x.id === pid;
+      });
+      const d = ensureDraft(pid, p || {});
+      const name =
+        (p && (p.displayName || p.usernameMasked || p.username)) || pid;
+      const usid = (d && d.userServiceId) || (p && p.userServiceId) || "";
+      if (title) {
+        title.textContent =
+          "完整日志 · " + name + (usid ? " · 桌面 " + usid : "");
+      }
+      if (body) body.innerHTML = profileLogsHtml(pid, { full: true });
+      // HARD_GATE#810: force visible vs CSS .log-full-modal / [hidden] / .is-hidden
+      // HARD_GATE#827: scroll lock + return focus; close must reverse cleanly
+      state.logModalReturnFocus =
+        document.activeElement && document.activeElement !== document.body
+          ? document.activeElement
+          : document.querySelector('.log-panel[data-pid="' + pid + '"]') ||
+            document.querySelector('.card[data-pid="' + pid + '"] .log-panel') ||
+            null;
+    }
     el.classList.remove("hidden", "is-hidden");
     el.classList.add("open", "is-open");
     el.removeAttribute("hidden");
@@ -2914,13 +2957,35 @@ function setComposerMsg(text, kind) {
 
 
   // HARD_GATE#831 CARD_LOG_DBLCLICK: double-click card log viewport opens full modal
+  // HARD_GATE#871d-proto-serial-globallog: double-click 运行日志 (#global-log) → full modal
   document.addEventListener(
     "dblclick",
     function (ev) {
       const t = ev.target;
       if (!t || !t.closest) return;
+      // global run-log panel first (do not require data-log / card)
+      const gbox = t.closest(
+        "#global-log, .global-log-panel .log-box, .global-log-panel .log-viewport, .global-log-panel"
+      );
+      if (gbox) {
+        // avoid treating card log that might nest (none expected)
+        const inCard = t.closest(".card, .account-card, [data-pid]");
+        if (!inCard || gbox.id === "global-log" || gbox.closest(".global-log-panel")) {
+          if (!inCard || (gbox.closest && gbox.closest(".global-log-panel"))) {
+            ev.preventDefault();
+            openLogModal("__global__");
+            return;
+          }
+        }
+      }
       const box = t.closest('[data-log], .log-panel, .card-surface-log-only, .log-viewport');
       if (!box) return;
+      // skip if this is the global log box without a profile id
+      if (box.id === "global-log" || (box.closest && box.closest(".global-log-panel") && !box.getAttribute("data-log"))) {
+        ev.preventDefault();
+        openLogModal("__global__");
+        return;
+      }
       let pid = box.getAttribute("data-log");
       if (!pid) {
         const card = box.closest("[data-pid], .account-card, .card");

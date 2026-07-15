@@ -4848,6 +4848,7 @@ html body article.card .card-summary strong,
   margin-left: 2px !important;
   font-weight: 600 !important;
 }
+/* HARD_GATE#871d-mobile-2col: keep card-summary 2-col on all mobile widths (no 1-col collapse). */
 @media (max-width: 720px) {
   html body .timeline article.card .card-summary,
   html body .cards .card .card-summary,
@@ -4860,13 +4861,5 @@ html body article.card .card-summary strong,
     font-size: 11px !important;
   }
 }
-@media (max-width: 420px) {
-  html body .timeline article.card .card-summary,
-  html body .cards .card .card-summary,
-  html body article.card .card-summary,
-  .card .card-summary,
-  #cards .card .card-summary,
-  .card-summary {
-    grid-template-columns: 1fr !important;
-  }
-}
+/* was max-width:420px → 1fr; removed so 云桌面/协议/客户端 | 模式/间隔/状态 stay 2-col */
+
