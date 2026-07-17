@@ -3089,7 +3089,13 @@ def _simple_run_keepalive(target, state_path, protocol, interval_minutes, traffi
             print(f"[官方自动关机时长]获取失败：{err}", flush=True)
 
     print("\n开始保活：", flush=True)
-    print("- 后续每轮保活前不再检测开机、不再触发开机", flush=True)
+    # mode=2 (forever): each round re-checks power and auto-starts if the
+    # desktop was auto-powered-off (~30min idle).  Timed mode still only
+    # boots once up front so short product tests stay predictable.
+    if int(mode) == 2:
+        print("- mode=2：每轮保活前检测开机状态，关机则自动开机后继续", flush=True)
+    else:
+        print("- 后续每轮保活前不再检测开机、不再触发开机", flush=True)
     print("- 每分钟状态检测只打印展示，不联动任何开机操作", flush=True)
     print("- 接口瞬时失败(5xx/网络)不退出，自动跳过本轮并重试", flush=True)
     print("- Ctrl+C 可退出\n", flush=True)
@@ -3111,6 +3117,45 @@ def _simple_run_keepalive(target, state_path, protocol, interval_minutes, traffi
                     )
                     time.sleep(transient_backoff_seconds)
                     continue
+                # Forever mode: if cloud auto-powered-off (~30min idle), re-boot
+                # before the next keepalive so multi-hour product stays online.
+                if int(mode) == 2:
+                    try:
+                        snap = _simple_cloud_status_with_force_retry(
+                            target, state_path,
+                            context=f"第{round_no}轮保活前开机检测",
+                        )
+                        if not cloud.is_running(snap):
+                            print(
+                                f"[{core.short_time()}] 第{round_no}轮：云电脑未运行，自动开机……",
+                                flush=True,
+                            )
+                            cag_boot.ensure_running(
+                                target, state_path,
+                                boot_wait=180, timeout=30, refresh_wait=5,
+                            )
+                            post = _simple_cloud_status_with_force_retry(
+                                target, state_path,
+                                context=f"第{round_no}轮开机后状态",
+                            )
+                            if not cloud.is_running(post):
+                                print(
+                                    f"[{core.short_time()}] 第{round_no}轮开机未就绪，"
+                                    f"{transient_backoff_seconds}s后重试",
+                                    flush=True,
+                                )
+                                time.sleep(transient_backoff_seconds)
+                                continue
+                            print(
+                                f"[{core.short_time()}] 第{round_no}轮开机完成，继续保活",
+                                flush=True,
+                            )
+                    except Exception as boot_err:  # noqa: BLE001
+                        print(
+                            f"[{core.short_time()}] 第{round_no}轮开机检测/开机失败"
+                            f"（将继续尝试保活）：{boot_err}",
+                            flush=True,
+                        )
                 # Start round timing only after all pre-flight checks are done.
                 # Token refresh/re-login time must not consume the user-configured
                 # keepalive traffic duration or the configured round interval.

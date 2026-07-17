@@ -408,6 +408,9 @@ class SubprocessBackend:
         # HARD_GATE#870: drop PYTHONPATH so cwd=/data cannot re-introduce /app
         # package shadowing of site-packages (invalid choice: simple-keepalive).
         env.pop("PYTHONPATH", None)
+        # LIVE child stdout is a file; force line-buffer so path/progress
+        # appear in worker.log / card UI immediately (not only at exit).
+        env["PYTHONUNBUFFERED"] = "1"
         # Container must not send SPICE/SCG via HTTP(S) proxy (user hard rule).
         for k in (
             "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
@@ -421,17 +424,38 @@ class SubprocessBackend:
         return env
 
     def _acquire_lock(self) -> None:
+        # Cross-platform: fcntl is Unix-only; Windows uses msvcrt (same as token.py).
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(self.lock_path), os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            import fcntl
+            if sys.platform.startswith("win"):
+                import msvcrt
 
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                os.lseek(fd, 0, os.SEEK_SET)
+                # Ensure at least 1 byte so msvcrt.locking has a range.
+                try:
+                    if os.fstat(fd).st_size < 1:
+                        os.write(fd, b"\0")
+                        os.lseek(fd, 0, os.SEEK_SET)
+                except OSError:
+                    pass
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except Exception as e:
-            os.close(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
             raise RuntimeError(f"PROFILE_LOCK: {e}") from e
-        os.ftruncate(fd, 0)
-        os.write(fd, f"{os.getpid()}\n".encode("ascii"))
+        try:
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, f"{os.getpid()}\n".encode("ascii"))
+        except OSError:
+            pass
         self._lock_fd = fd
 
     def _release_lock(self) -> None:
@@ -440,9 +464,18 @@ class SubprocessBackend:
         if fd is None:
             return
         try:
-            import fcntl
+            if sys.platform.startswith("win"):
+                import msvcrt
 
-            fcntl.flock(fd, fcntl.LOCK_UN)
+                try:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+            else:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_UN)
         except Exception:
             pass
         try:

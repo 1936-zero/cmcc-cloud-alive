@@ -1186,6 +1186,10 @@ function wireAccessGate() {
       (p && p.mode) ||
       (job && job.mode) ||
       "live";
+    // HARD_GATE#ye4: preserve main/sub account flag from profile (config save/start re-login)
+    const isSub =
+      !!(p && (p.isSubAccount === true || String(p.loginMode || "").toLowerCase().indexOf("sub") === 0));
+    const loginMode = isSub ? "sub" : ((p && p.loginMode) || "main");
     if (!state.drafts[pid]) {
       state.drafts[pid] = {
         displayName: (p && p.displayName) || "",
@@ -1201,6 +1205,8 @@ function wireAccessGate() {
         userServiceId: (p && p.userServiceId) || "",
         desktopLabel: (p && p.desktopLabel) || "",
         spuCode: (p && (p.spuCode || p.spu_code)) || "",
+        isSubAccount: isSub,
+        loginMode: loginMode,
       };
     } else if (p) {
       const d = state.drafts[pid];
@@ -1221,11 +1227,30 @@ function wireAccessGate() {
       if (!d.lastOfficialProtocol) d.lastOfficialProtocol = d.protocol || "ZTE";
       if (p.mode) d.mode = p.mode;
       else if (job && job.mode) d.mode = job.mode;
+      // keep draft isSub unless profile explicitly changes it
+      if (d.isSubAccount == null) d.isSubAccount = isSub;
+      if (!d.loginMode) d.loginMode = loginMode;
+      if (p.isSubAccount === true || String(p.loginMode || "").toLowerCase().indexOf("sub") === 0) {
+        d.isSubAccount = true;
+        d.loginMode = "sub";
+      }
     }
     if (!state.drafts[pid].lastOfficialProtocol) {
       state.drafts[pid].lastOfficialProtocol = resolveUserProtocol(state.drafts[pid].protocol, state.drafts[pid].lastOfficialProtocol);
     }
     return state.drafts[pid];
+  }
+
+  /** Resolve main/sub for re-login from draft + profile (config save/start). */
+  function resolveLoginMode(d, p) {
+    if (d && (d.isSubAccount === true || String(d.loginMode || "").toLowerCase().indexOf("sub") === 0)) {
+      return "sub";
+    }
+    if (p && (p.isSubAccount === true || String(p.loginMode || "").toLowerCase().indexOf("sub") === 0)) {
+      return "sub";
+    }
+    if (d && d.loginMode) return String(d.loginMode).toLowerCase().indexOf("sub") === 0 ? "sub" : "main";
+    return "main";
   }
 
   function pushGlobal(line, level) {
@@ -1990,17 +2015,9 @@ function wireAccessGate() {
       '" data-key="password" placeholder="' +
       (p.hasPassword ? "已保存，不改请留空" : "请输入密码") +
       '" value="" /></label>' +
-      /* HARD_GATE#784 LOGIN_AFTER_PWD: 登录紧贴密码后、云桌面前 */
-      '<div class="field span-2 login-after-pwd">' +
-      '<button type="button" class="btn btn-secondary btn-login-inline" data-act="login" data-id="' +
-      esc(pid) +
-      '"' +
-      (busy ? " disabled" : "") +
-      ' title="登录并加载官方云桌面列表（不启动保活）">登录</button>' +
-      '<span class="field-hint">登录后加载云桌面列表，不会启动保活</span>' +
-      "</div>" +
-      '<div class="field span-2 desktop-field config-desktop-field">' +
-      "<span>云桌面</span>" +
+      /* HARD_GATE#layout_fix LOGIN_WITH_SAVE: 登录迁到底部与保存并列；保留轻提示 */
+      '<p class="field-hint login-hint-inline span-2">登录后加载云桌面列表，不会启动保活（底部「登录」）</p>' +
+      '<div class="field span-2 desktop-field config-desktop-field">' +      "<span>云桌面</span>" +
       '<div class="desk-seg-wrap">' +
       /* HARD_GATE#747: CTA button inside segmented html (empty + after list) */
       desktopSegmentedHtml(pid, selectedDesk, false) +
@@ -2085,7 +2102,11 @@ function wireAccessGate() {
       '" ' +
       (busy ? "disabled" : "") +
       ">删除账号</button>" +
-      '<button type="button" class="btn btn-ghost" data-act="config-close">取消</button>' +
+      '<button type="button" class="btn btn-secondary btn-login-inline" data-act="login" data-id="' +
+      esc(pid) +
+      '"' +
+      (busy ? " disabled" : "") +
+      ' title="登录并加载官方云桌面列表（不启动保活）">登录</button>' +
       "</div>"
     );
   }
@@ -2527,17 +2548,41 @@ function setComposerMsg(text, kind) {
   }
 
   async function onSave(pid) {
+    // HARD_GATE#save-login: always pull open form fields first — otherwise
+    // password/username typed in modal never land in draft (input event may
+    // miss when user clicks 保存 immediately after typing).
+    const form =
+      $("#config-form") ||
+      document.querySelector('[data-id="' + pid + '"]') ||
+      document.querySelector('.config-modal [data-pid="' + pid + '"]');
+    if (form) {
+      const inputs = form.querySelectorAll("[data-key]");
+      for (let i = 0; i < inputs.length; i++) {
+        applyDraftFromEl(inputs[i]);
+      }
+    }
     const d = ensureDraft(pid);
     state.busy[pid] = true;
     renderCards();
     try {
       // gate6: only POST /login when password present (username-only must not force re-auth)
+      // HARD_GATE#ye4: must pass mode/isSubAccount — sub accounts reject main passwordLogin (4119)
+      // HARD_GATE#save-login: /login is the ONLY endpoint that persists password
+      // into profile state (profiles_patch rejects password). Always login when
+      // password present so 保存 = 写 state + 上游鉴权.
       if (d.password) {
+        const p = state.profiles.find(function (x) {
+          return x.id === pid;
+        });
+        const loginMode = resolveLoginMode(d, p);
         await api("/api/profiles/" + encodeURIComponent(pid) + "/login", {
           method: "POST",
           body: {
             username: d.username || undefined,
             password: d.password,
+            mode: loginMode,
+            isSubAccount: loginMode === "sub",
+            clientProfile: d.clientProfile || undefined,
           },
         });
       }
@@ -2591,12 +2636,16 @@ function setComposerMsg(text, kind) {
     renderCards();
     try {
       // gate6: only POST /login when password is present (avoid "username only" → 401 AUTH_FAILED)
+      // HARD_GATE#ye4: pass mode/isSubAccount so sub-account re-login uses sub_password_login
       if (d.password) {
+        const loginMode = resolveLoginMode(d, p);
         await api("/api/profiles/" + encodeURIComponent(pid) + "/login", {
           method: "POST",
           body: {
             username: d.username || undefined,
             password: d.password,
+            mode: loginMode,
+            isSubAccount: loginMode === "sub",
           },
         });
       }
@@ -2904,14 +2953,21 @@ function setComposerMsg(text, kind) {
 
   
   async function onConfigLogin(pid) {
-    // HARD_GATE#784: modal 登录 = save draft creds then refresh official desktops (no keepalive)
+    // HARD_GATE#784 + #save-login: modal 登录 = POST /login (写 password+sohoToken
+    // 到 state) then refresh official desktops (no keepalive).
+    // BUGFIX: previously used PUT /api/profiles/{id} which does not exist
+    // (only PATCH, and patch rejects password) → silent no-op, state never
+    // got new password → later 启动 showed AUTH_FAILED / 4119.
     if (!pid) return;
     state.busy[pid] = true;
     patchCardStatus(pid);
     // if config form open, keep form; avoid full card wipe of inputs
     try {
       // pull latest draft from open form fields
-      const form = $("#config-form") || document.querySelector('[data-id="' + pid + '"]');
+      const form =
+        $("#config-form") ||
+        document.querySelector('[data-id="' + pid + '"]') ||
+        document.querySelector('.config-modal [data-pid="' + pid + '"]');
       if (form) {
         const inputs = form.querySelectorAll("[data-key]");
         for (let i = 0; i < inputs.length; i++) {
@@ -2919,23 +2975,29 @@ function setComposerMsg(text, kind) {
         }
       }
       const d = ensureDraft(pid);
-      const body = {
-        username: d.username || undefined,
-        password: d.password || undefined,
-        clientProfile: d.clientProfile || undefined,
-        protocol: d.protocol || undefined,
-        mode: d.mode || undefined,
-        displayName: d.displayName || undefined,
-      };
-      // best-effort save so /desktops uses fresh creds
-      try {
-        await api("/api/profiles/" + encodeURIComponent(pid), {
-          method: "PUT",
-          body: JSON.stringify(body),
-        });
-      } catch (_) {
-        /* create path may differ; still try desktops */
+      const p = state.profiles.find(function (x) {
+        return x.id === pid;
+      });
+      const loginMode = resolveLoginMode(d, p);
+      if (!d.password && !(p && (p.sessionEstablished || p.hasPassword))) {
+        throw new Error("请先填写密码再登录");
       }
+      // ALWAYS go through /login so password lands in state file.
+      await api("/api/profiles/" + encodeURIComponent(pid) + "/login", {
+        method: "POST",
+        body: {
+          username: d.username || undefined,
+          password: d.password || undefined,
+          mode: loginMode,
+          isSubAccount: loginMode === "sub",
+          clientProfile: d.clientProfile || undefined,
+        },
+      });
+      // clear password from draft after successful write (matches onSave)
+      d.password = "";
+      toast("登录成功，正在刷新云桌面");
+      pushGlobal("[" + pid + "] 配置登录成功，已写 state");
+      await loadProfiles();
       await onDesktops(pid);
     } catch (e) {
       const msg = humanError(e, "登录失败");

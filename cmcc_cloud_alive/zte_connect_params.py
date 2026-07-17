@@ -132,7 +132,11 @@ def decode_connect_params(connect_str):
 
 
 def parse_connect_params(raw):
-    """Port of B's ParseConnectParams: tokenize + parse ``-h``/``-p``/``--vmid`` flag tokens."""
+    """Port of B's ParseConnectParams: tokenize + parse ``-h``/``-p``/``--vmid`` flag tokens.
+
+    IPv6-only connectStr may omit ``-h``/``-p`` and only provide ``--hv6``/``--pv6``
+    (ye4B6y live 2026-07-17). Prefer IPv4 when both present; else fall back to v6.
+    """
     cp = ConnectParams()
     cp.raw = raw
     tokens = _split_command_line(raw)
@@ -157,18 +161,20 @@ def parse_connect_params(raw):
         i += 1
 
     cp.args = args
-    cp.host = args.get("-h", "")
+    # Prefer IPv4 (-h/-p) when present; fall back to IPv6-only (--hv6/--pv6).
+    # Align go-zte-hv6-probe firstNonEmpty(-h,--hv6) / (-p,--pv6) / (--vmip,--hv6).
+    cp.host = args.get("-h", "") or args.get("--hv6", "") or ""
     cp.key = args.get("-k", "")
     cp.vm_id = args.get("--vmid", "")
     cp.access_token = args.get("--accessToken", "")
-    cp.vm_ip = args.get("--vmip", "")
-    cp.port = _int_value(args, "-p", 0)
+    cp.vm_ip = args.get("--vmip", "") or args.get("--hv6", "") or ""
+    cp.port = _int_value(args, "-p", 0) or _int_value(args, "--pv6", 0)
     cp.proxy_sport = _int_value(args, "--proxy-sport", 0)
 
     if cp.host == "":
-        raise ValueError("connectStr missing -h host")
+        raise ValueError("connectStr missing -h/--hv6 host")
     if cp.port == 0:
-        raise ValueError("connectStr missing -p port")
+        raise ValueError("connectStr missing -p/--pv6 port")
     if cp.vm_id == "":
         raise ValueError("connectStr missing --vmid")
     return cp

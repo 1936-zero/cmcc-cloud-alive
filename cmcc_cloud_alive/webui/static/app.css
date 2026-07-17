@@ -1050,15 +1050,17 @@ img.brand-mark {
 }
 #config-modal.modal.hidden { display: none; }
 .config-modal-card {
-  /* OPS#469: keep >=720 so form-bottom-3 has room for 3 tracks */
+  /* OPS#469: desktop prefers ~760; mobile must shrink without min-width lock */
   width: min(760px, 100%);
-  min-width: min(720px, 100%);
-  max-height: min(86vh, 900px);
+  min-width: 0;
+  max-width: min(920px, 96vw);
+  max-height: min(90vh, 900px);
   overflow: auto;
   background: #fff;
   border-radius: 8px;
   box-shadow: 0 18px 50px rgba(15, 23, 42, 0.28);
   padding: 0;
+  box-sizing: border-box;
 }
 .config-modal-card .modal-head {
   display: flex;
@@ -1111,9 +1113,8 @@ img.brand-mark {
 .card.is-configuring { outline: 2px solid rgba(37, 99, 235, 0.35); }
 .card .card-body { display: none !important; }
 .card.open .card-body { display: none !important; }
-@media (max-width: 640px) {
-  .config-modal-fields { grid-template-columns: 1fr; }
-}
+/* early .config-modal-fields 640 single-col removed: overridden by later 1fr 1fr;
+   real mobile rule lives after L1228 as max-width:520 !important */
 
 /* ASSIGN#380 / OPS#388 — desktop Segmented + dual equal boxes */
 .desk-seg {
@@ -1227,6 +1228,68 @@ img.brand-mark {
   grid-template-columns: 1fr 1fr;
 }
 
+/* HARD_GATE#layout_fix: single-col fields only on real phone; must follow L1226 */
+@media (max-width: 520px) {
+  .config-modal-fields {
+    grid-template-columns: 1fr !important;
+  }
+  #config-modal.modal {
+    padding: 10px 8px;
+    align-items: flex-start;
+  }
+  .config-modal-card {
+    width: 100%;
+    max-width: 100%;
+    max-height: min(94vh, 900px);
+    border-radius: 10px;
+  }
+  .config-modal-card .modal-body {
+    padding: 12px 12px 14px;
+  }
+  /* HARD_GATE#layout_fix gate19: 移动端底部四钮强制单排，禁止 2x2 错乱 */
+  .config-modal-actions {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    justify-content: flex-end !important;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+  }
+  .config-modal-actions .btn {
+    flex: 1 1 0 !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    width: auto !important;
+    padding: 8px 6px !important;
+    font-size: 12px !important;
+    white-space: nowrap;
+  }
+  .config-modal-actions .btn-primary {
+    min-width: 0 !important;
+  }
+  .config-modal-actions .btn-login-inline {
+    flex: 0.85 1 0 !important;
+    margin-left: 0 !important;
+  }
+}
+
+/* HARD_GATE#layout_fix: remove double border (field shell + desk-seg) */
+#config-modal .config-desktop-field,
+#config-modal .desktop-field.config-desktop-field {
+  border: none !important;
+  background: transparent !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+}
+#config-modal .config-desktop-field > span {
+  margin-bottom: 6px;
+}
+#config-modal .desk-seg {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+}
+
 /* card bottom dual boxes equal height */
 .card-surface-dual {
   display: grid;
@@ -1334,13 +1397,19 @@ img.brand-mark {
   flex-wrap: wrap;
   margin-top: 8px;
 }
-@media (max-width: 640px) {
-  .config-modal-fields .form-bottom-3,
-  .config-modal-fields .form-pair {
+/* HARD_GATE#layout_fix: keep 3/2 tracks on tablet; stack only on narrow phone */
+@media (max-width: 480px) {
+  .config-modal-fields .form-bottom-3 {
     grid-template-columns: 1fr !important;
   }
   .config-modal-card {
     min-width: 0;
+  }
+}
+/* HARD_GATE#layout_fix: 保活间隔||流量持续 移动端仍并列，永不单列 */
+@media (max-width: 400px) {
+  .config-modal-fields .form-pair {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   }
 }
 
@@ -1630,18 +1699,27 @@ img.brand-mark {
   max-width: min(920px, 96vw);
 }
 
-@media (max-width: 900px) {
+/* HARD_GATE#layout_fix: form-bottom-3 stays 3-col until phone; was 900 too early */
+@media (max-width: 560px) {
   .form-bottom-3 {
     grid-template-columns: 1fr !important;
   }
-  /* HARD_GATE#729 A: keep interval||traffic 2-col until narrow phone */
+  /* HARD_GATE#729 A: card dual surface stacks on tablet */
   .card-surface-dual {
     grid-template-columns: 1fr !important;
   }
 }
-@media (max-width: 640px) {
+/* tablet mid: 3→2 if needed for composer narrow col */
+@media (max-width: 720px) and (min-width: 561px) {
+  .composer .form-bottom-3,
+  .composer-col-right .form-bottom-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+}
+/* HARD_GATE#layout_fix: form-pair 全局也保持双列（含移动） */
+@media (max-width: 400px) {
   .form-pair {
-    grid-template-columns: 1fr !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   }
 }
 
@@ -2124,15 +2202,53 @@ button.btn-login-inline {
   padding-left: 14px !important;
   padding-right: 14px !important;
 }
-/* config modal short username/password when present */
+/* HARD_GATE#layout_fix: 账号/密码同宽填满各自 grid 轨，禁 max-width 截短 */
 #config-modal input[data-key="username"],
 #config-modal input[data-key="password"],
 #config-modal input[name="username"],
 #config-modal input[name="password"] {
-  max-width: 20rem;
-  width: 100%;
+  max-width: none !important;
+  width: 100% !important;
   box-sizing: border-box;
 }
+#config-modal .config-modal-fields > .field:not(.span-2) {
+  min-width: 0;
+  width: 100%;
+}
+#config-modal .config-modal-fields > .field:not(.span-2) > input {
+  width: 100% !important;
+  max-width: none !important;
+}
+/* 登录提示行（按钮已迁底部与保存并列） */
+#config-modal .login-hint-inline {
+  grid-column: 1 / -1;
+  margin: -2px 0 2px;
+  font-size: 12px;
+  color: var(--text-dim, #6b7280);
+  line-height: 1.35;
+}
+/* HARD_GATE#layout_fix gate19: 四钮整体右下角一排，禁止「三左一右」 */
+#config-modal .config-modal-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+#config-modal .config-modal-actions .btn {
+  flex: 0 0 auto;
+  margin-left: 0 !important;
+}
+#config-modal .config-modal-actions .btn-login-inline {
+  width: auto !important;
+  min-width: 4.5rem;
+  max-width: none;
+  flex: 0 0 auto;
+  margin-left: 0 !important; /* 不单独甩右，整组右对齐 */
+  margin-right: 0;
+}
+
 @media (max-width: 860px) {
   .form-grid-composer {
     grid-template-columns: 1fr !important;

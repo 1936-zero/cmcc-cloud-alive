@@ -16,6 +16,7 @@ responses are AES-CBC security envelopes decoded by zte_security.
 import json
 import os
 import ssl
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -487,12 +488,19 @@ def run_zte_keepalive_session(firm: ZTEFirmAuth, connect_str: str, *,
                               duration: float = 120.0,
                               auth_template_hex: str = "",
                               dial_timeout: float = 30.0) -> dict:
-    """Full ZTE CAG → mux → raw-SPICE keepalive session (P6–P9).
+    """Full ZTE CAG keepalive session (P6–P9).
 
-    Mirrors B's ``keepaliveZTESession`` (cmd/keepalive.go:115-227) steps 9-19:
-    decode connect params → dial outer CAG (TCP/TLS) → CAGMux → open main link
-    → raw SPICE main handshake → setup subchannels → subchannel keepalive
-    threads → main keepalive loop (blocks for *duration* seconds).
+    Two transport paths (selected by auth host family)::
+
+      * **IPv4 (default)**: TCP pre-auth (178B head) → TLS → CAGMux →
+        raw-SPICE main/subchannels → keepaliveRawSpiceLoop.  Unchanged
+        historical path for accounts that already work.
+      * **IPv6 (ye4B6y)**: TCP pre-auth (50B head + L220 with ``inner.port``)
+        → **raw** socket (no TLS) → ``0a000000`` heartbeat loop.  Evidence:
+        official pcap + PROBE_raw_ztec_hold60 (60s 51/51).
+
+    Detection: :func:`~cmcc_cloud_alive.zte_cag.uses_raw_ztec_path` (host
+    contains ``:`` / IPv6 literal, after env ``CCK_ZTE_CAG_AUTH_HOST``).
 
     Parameters
     ----------
@@ -505,21 +513,28 @@ def run_zte_keepalive_session(firm: ZTEFirmAuth, connect_str: str, *,
     duration : float
         How long the main keepalive loop should run (seconds).
     auth_template_hex : str
-        Hex-encoded CAG auth template.  If empty, falls back to the
-        ``CCK_ZTE_CAG_AUTH_TEMPLATE_HEX`` environment variable.
+        Hex-encoded CAG auth template.  Required for IPv4/TLS path; optional
+        for IPv6 raw (scratch L220).  Falls back to
+        ``CCK_ZTE_CAG_AUTH_TEMPLATE_HEX``.
     dial_timeout : float
-        Timeout for the outer CAG TCP/TLS dial.
+        Timeout for the outer CAG dial.
 
     Returns
     -------
     dict
-        Counters from :func:`keepaliveRawSpiceLoop`.
+        Counters from the active keepalive loop.
     """
     import threading
 
     # Lazy imports to avoid circular dependencies (P10 pattern).
     from .zte_connect_params import decode_connect_params, inner_from_connect_params
-    from .zte_cag import CAGDialOptions, dial_cag_tcp_tls
+    from .zte_cag import (
+        CAGDialOptions,
+        dial_cag_tcp_raw,
+        dial_cag_tcp_tls,
+        keepalive_raw_ztec_loop,
+        uses_raw_ztec_path,
+    )
     from .zte_cag_mux import CAGMux, open_cag_mux_link
 
     if not connect_str:
@@ -532,7 +547,33 @@ def run_zte_keepalive_session(firm: ZTEFirmAuth, connect_str: str, *,
 
     if not auth_template_hex:
         auth_template_hex = os.environ.get("CCK_ZTE_CAG_AUTH_TEMPLATE_HEX", "")
-    if not auth_template_hex:
+
+    raw_path = uses_raw_ztec_path(inner)
+    # Auto-detect IPv4 vs IPv6 ZTE transport (customer chooses "ZTE" only):
+    #   IPv4 → classic CAGMux + raw-SPICE main/subchannel (unchanged)
+    #   IPv6 → raw ZTEC control-plane (ADD_LINK/DATA/HB slice loop).
+    # NOTE: IPv6 path is NOT true SPICE media; it is the validated mode2-style
+    # long-hold control plane (ye4B6y/Qx9x5V). True IPv6 SPICE is deferred
+    # until a customer reports control-plane hold insufficient.
+    try:
+        _host = ""
+        try:
+            _host = str(getattr(inner, "host", None) or getattr(inner, "address", "") or "")
+        except Exception:
+            _host = ""
+        if raw_path:
+            print(
+                f"[zte] path=IPv6-raw-ZTEC (auto; NOT true SPICE media) host={_host!r}",
+                flush=True,
+            )
+        else:
+            print(
+                f"[zte] path=IPv4-CAGMux+SPICE (classic) host={_host!r}",
+                flush=True,
+            )
+    except Exception:
+        pass
+    if not auth_template_hex and not raw_path:
         raise ZTEError("CCK_ZTE_CAG_AUTH_TEMPLATE_HEX env var not set — "
                        "cannot dial CAG without auth template")
 
@@ -543,7 +584,92 @@ def run_zte_keepalive_session(firm: ZTEFirmAuth, connect_str: str, *,
         timeout=dial_timeout,
     )
 
-    # --- P7: dial outer CAG (TCP + TLS) ---
+    # --- IPv6 long-session: raw ZTEC + ADD_LINK/DATA prime + HB ---
+    # Pure HB / ADD_LINK+HB alone did NOT block ~30min auto power-off
+    # (ye4B6y CHECKPOINT_raw_hb_30m_fail / CHECKPOINT_addlink_35m_still_off).
+    # Official OFFICIAL_ztec_p36024: ADD_LINK 7/8 then DATA lid7 then HB.
+    # Also proactively re-dial every ~15min (slice) so auth+prime is
+    # refreshed before the idle auto-power-off window.  On pipe break /
+    # early exit, redial within remaining duration.
+    if raw_path:
+        # Cap each dial slice so we re-prime before ~30min idle cutoff.
+        _RAW_SLICE_S = 900.0  # 15 minutes
+        deadline = time.monotonic() + max(0.0, float(duration))
+        total = {
+            "hb_sent": 0,
+            "hb_recv": 0,
+            "ok": 0,
+            "mainPingOK": 0,
+            "mainPongOK": 0,
+            "links_sent": 0,
+            "data_sent": 0,
+            "prime_recv": 0,
+            "redials": 0,
+        }
+        last_err = None
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.05:
+                break
+            slice_s = min(remaining, _RAW_SLICE_S)
+            try:
+                # Progress: path= alone leaves 30–60s of silence; users Ctrl+C
+                # thinking hang (WebUI + interactive). Emit dial/slice ticks.
+                print(
+                    f"[zte] raw-ZTEC dialing slice={slice_s:.0f}s "
+                    f"remaining={remaining:.0f}s redials={total['redials']}",
+                    flush=True,
+                )
+                raw_sock, _session = dial_cag_tcp_raw(opts)
+                print(
+                    f"[zte] raw-ZTEC dial ok, prime+HB for {slice_s:.0f}s "
+                    f"(progress every 10s)…",
+                    flush=True,
+                )
+                part = keepalive_raw_ztec_loop(
+                    raw_sock,
+                    interval=1.0,
+                    stop_after=slice_s,
+                    prime_links=True,
+                )
+                for k in (
+                    "hb_sent", "hb_recv", "mainPingOK", "mainPongOK",
+                    "links_sent", "data_sent", "prime_recv",
+                ):
+                    total[k] = int(total.get(k) or 0) + int(part.get(k) or 0)
+                total["ok"] = 1 if total["hb_recv"] > 0 else 0
+                last_err = None
+                print(
+                    f"[zte] raw-ZTEC slice done hb_sent={part.get('hb_sent')} "
+                    f"hb_recv={part.get('hb_recv')} links={part.get('links_sent')} "
+                    f"data={part.get('data_sent')} ok={part.get('ok')}",
+                    flush=True,
+                )
+                # Normal completion for whole duration.
+                if time.monotonic() >= deadline - 0.05:
+                    break
+                # Slice finished or early return — redial to fill duration.
+                total["redials"] = int(total.get("redials") or 0) + 1
+                time.sleep(min(1.0, max(0.1, deadline - time.monotonic())))
+            except Exception as err:  # noqa: BLE001 — redial policy
+                last_err = err
+                remaining = deadline - time.monotonic()
+                print(
+                    f"[zte] raw-ZTEC dial/loop error (will redial if time left): "
+                    f"{type(err).__name__}: {err}",
+                    flush=True,
+                )
+                if remaining <= 2.0:
+                    break
+                total["redials"] = int(total.get("redials") or 0) + 1
+                time.sleep(min(2.0, max(0.2, remaining / 4.0)))
+                continue
+        if total["hb_recv"] <= 0 and last_err is not None:
+            raise last_err
+        total["ok"] = 1 if total["hb_recv"] > 0 else 0
+        return total
+
+    # --- P7: dial outer CAG (TCP + TLS) — IPv4 historical path ---
     tls_conn, _session = dial_cag_tcp_tls(opts)
 
     # --- P8: CAG multiplexer + main link ---

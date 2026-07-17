@@ -866,7 +866,7 @@ async def system_info(request: Request) -> JSONResponse:
             "profilesDir": str(profiles_dir()),
             "cliCallable": True,  # package present; not probing LIVE
             # Footer: "服务 cmcc-cloud-alive · v{version}" — align with WebUI baseline id.
-            "version": "0.1.0-webui-871d-access-gate17",
+            "version": "0.1.0-webui-871d-access-gate19",
             "tokenRequired": bool(expected),
             # gate6: empty token = open access; setup is optional (not forced)
             "setupRequired": False,
@@ -890,7 +890,7 @@ async def auth_status(request: Request) -> JSONResponse:
             "tokenRequired": bool(expected),
             "authEnabled": bool(expected),
             "authenticated": authed,
-            "version": "0.1.0-webui-871d-access-gate17",
+            "version": "0.1.0-webui-871d-access-gate19",
         }
     )
 
@@ -1302,12 +1302,20 @@ async def profiles_login(request: Request) -> JSONResponse:
         state["username"] = str(body["username"]).strip()
         username = state["username"]
     # main/sub account login mode (composer dual buttons)
+    # HARD_GATE#ye4: when FE omits mode (legacy config save/start), KEEP existing
+    # profile isSubAccount — defaulting to main would 4119 sub-account passwords.
     raw_mode = body.get("mode")
     if raw_mode is None and "isSubAccount" in body:
         raw_mode = "sub" if body.get("isSubAccount") else "main"
+    if raw_mode is None:
+        # preserve stored account type; only fall back to main for brand-new profiles
+        if state.get("isSubAccount") is True or str(state.get("loginMode") or "").lower().startswith("sub"):
+            raw_mode = "sub"
+        else:
+            raw_mode = "main"
     login_mode = (
         "sub"
-        if str(raw_mode or "main").lower() in ("sub", "subaccount", "1", "true")
+        if str(raw_mode or "main").lower() in ("sub", "subaccount", "1", "true", "sub_password")
         else "main"
     )
     state["loginMode"] = login_mode
