@@ -3269,13 +3269,46 @@ button.desk-refresh-cta:hover,
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   }
   .field-login-cta { grid-column: 1 / -1; }
-  .field-login-cta .login-cta-pair { width: 100% !important; }
-  .field-login-cta .btn-login-cta { width: auto !important; flex: 1 1 auto !important; }
+  /* HARD_GATE mobile-login-cta: pair 宽=密码列宽；两钮均分填满，无右侧空白 */
+  .field-login-cta .login-cta-pair {
+    display: flex !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+    gap: 8px !important;
+  }
+  /* 盖过 #c-login / #c-login.btn-login-cta 的 flex:0 与 max-width:8rem */
+  .field-login-cta .login-cta-pair .btn-login-cta,
+  .field-login-cta .login-cta-pair #c-login.btn-login-cta,
+  .field-login-cta .login-cta-pair #c-login-sub.btn-login-cta,
+  .field-login-cta #c-login,
+  .field-login-cta #c-login-sub {
+    flex: 1 1 0 !important;
+    width: 0 !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    align-self: stretch !important;
+    box-sizing: border-box !important;
+  }
 }
 @media (max-width: 720px) {
   .composer-row-account,
   .composer-row-conn {
     grid-template-columns: 1fr !important;
+  }
+  /* 单列移动端再钉一次，避免旧 #c-login max-width 回潮 */
+  .field-login-cta .login-cta-pair {
+    width: 100% !important;
+  }
+  .field-login-cta .login-cta-pair .btn-login-cta,
+  .field-login-cta .login-cta-pair #c-login.btn-login-cta,
+  .field-login-cta .login-cta-pair #c-login-sub.btn-login-cta,
+  .field-login-cta #c-login,
+  .field-login-cta #c-login-sub {
+    flex: 1 1 0 !important;
+    width: 0 !important;
+    min-width: 0 !important;
+    max-width: none !important;
   }
 }
 
@@ -5397,5 +5430,57 @@ html body article.card .card-summary strong,
   #token-modal .token-modal-actions .btn {
     font-size: 0.86rem;
     padding: 8px 6px;
+  }
+}
+
+/* HARD_GATE#mobile-login-cta-width: 移动端两钮组外缘=密码框外缘，无右侧余白 */
+@media (max-width: 720px) {
+  html body #composer .composer-row-account {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  html body #composer .composer-row-account > .field,
+  html body #composer .composer-row-account > .field-login-cta {
+    grid-column: 1 / -1 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    box-sizing: border-box !important;
+  }
+  html body #composer .composer-row-account #c-password,
+  html body #composer .composer-row-account input#c-password {
+    width: 100% !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    box-sizing: border-box !important;
+  }
+  html body #composer .composer-row-account .field-login-cta {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+  html body #composer .composer-row-account .field-login-cta .login-cta-pair {
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: nowrap !important;
+    align-items: stretch !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    gap: 8px !important;
+    box-sizing: border-box !important;
+    margin: 0 !important;
+  }
+  /* 盖过历史 #c-login max-width:8rem / flex:0 0 auto / width:auto */
+  html body #composer .composer-row-account .field-login-cta .login-cta-pair > .btn-login-cta,
+  html body #composer .composer-row-account .field-login-cta .login-cta-pair > #c-login,
+  html body #composer .composer-row-account .field-login-cta .login-cta-pair > #c-login-sub,
+  html body #composer .composer-row-account .field-login-cta #c-login.btn-login-cta,
+  html body #composer .composer-row-account .field-login-cta #c-login-sub.btn-login-cta {
+    flex: 1 1 0 !important;
+    width: 0 !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    align-self: stretch !important;
+    box-sizing: border-box !important;
   }
 }
