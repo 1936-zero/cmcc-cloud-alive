@@ -1253,16 +1253,89 @@ function wireAccessGate() {
     return "main";
   }
 
-  function pushGlobal(line, level) {
-    state.globalLog.push({
-      at: new Date().toISOString(),
+  // HARD_GATE#global-run-log: FE mirrors backend page log; never sole source of truth
+  function pushGlobalLocal(line, level, at) {
+    const entry = {
+      at: at || new Date().toISOString(),
       line: String(line || ""),
       level: level || "info",
-    });
-    if (state.globalLog.length > 300) {
-      state.globalLog = state.globalLog.slice(-300);
+    };
+    if (!entry.line) return entry;
+    // de-dupe last identical line (SSE echo of our own POST)
+    const last = state.globalLog[state.globalLog.length - 1];
+    if (
+      last &&
+      last.line === entry.line &&
+      (last.level || "info") === (entry.level || "info") &&
+      String(last.at || "") === String(entry.at || "")
+    ) {
+      return entry;
+    }
+    state.globalLog.push(entry);
+    if (state.globalLog.length > 500) {
+      state.globalLog = state.globalLog.slice(-500);
     }
     renderGlobalLog();
+    return entry;
+  }
+
+  function pushGlobal(line, level) {
+    const text = String(line || "");
+    if (!text) return;
+    const lvl = level || "info";
+    // optimistic local paint so UI is snappy; backend is source of truth
+    const localAt = new Date().toISOString();
+    pushGlobalLocal(text, lvl, localAt);
+    api("/api/global-logs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ line: text, level: lvl }),
+    })
+      .then(function (res) {
+        const e = res && res.entry;
+        if (!e || !e.line) return;
+        // replace optimistic tail if same text and backend returned canonical stamp
+        const last = state.globalLog[state.globalLog.length - 1];
+        if (last && last.line === e.line && String(last.at) === localAt) {
+          last.at = e.at || last.at;
+          last.level = e.level || last.level;
+          renderGlobalLog();
+        }
+      })
+      .catch(function () {
+        /* offline/tunnel: keep local mirror only */
+      });
+  }
+
+  async function loadGlobalLogs() {
+    try {
+      const res = await api("/api/global-logs?limit=500");
+      const lines = (res && res.lines) || [];
+      state.globalLog = lines.map(function (x) {
+        return {
+          at: x.at || "",
+          line: String(x.line || ""),
+          level: x.level || "info",
+        };
+      });
+      if (state.globalLog.length > 500) {
+        state.globalLog = state.globalLog.slice(-500);
+      }
+      renderGlobalLog();
+      return state.globalLog;
+    } catch (e) {
+      return state.globalLog || [];
+    }
+  }
+
+  async function clearGlobalLogs() {
+    state.globalLog = [];
+    renderGlobalLog();
+    try {
+      await api("/api/global-logs", { method: "DELETE" });
+    } catch (e) {
+      /* keep local cleared; next load may restore if backend failed */
+    }
   }
 
   /* HARD_GATE#768-B: card-only keepalive/job log sink (never global) */
@@ -3937,6 +4010,18 @@ function setComposerMsg(text, kind) {
           applyLogsToDom(pid, true);
         } catch (_) {}
       });
+      // HARD_GATE#global-run-log: backend page log fan-out (tunnel / multi-tab)
+      es.addEventListener("global_log", function (ev) {
+        try {
+          const d = JSON.parse(ev.data) || {};
+          if (!d.line) return;
+          pushGlobalLocal(d.line, d.level || "info", d.at || "");
+        } catch (_) {}
+      });
+      es.addEventListener("global_log_cleared", function () {
+        state.globalLog = [];
+        renderGlobalLog();
+      });
       es.onmessage = function (ev) {
         try {
           const data = JSON.parse(ev.data);
@@ -4130,6 +4215,7 @@ function setComposerMsg(text, kind) {
               return loadLogs(pid, false).catch(function () {});
             })
           );
+          await loadGlobalLogs().catch(function () {});
           toast("已刷新账号与日志");
           pushGlobal("整页刷新完成 · " + ids.length + " 个账号");
         } catch (e) {
@@ -4145,8 +4231,7 @@ function setComposerMsg(text, kind) {
     updateTokenBtn();
     $("#btn-clear-log") &&
       $("#btn-clear-log").addEventListener("click", function () {
-        state.globalLog = [];
-        renderGlobalLog();
+        clearGlobalLogs();
       });
     $("#c-clear") &&
       $("#c-clear").addEventListener("click", function () {
@@ -4418,7 +4503,6 @@ function setComposerMsg(text, kind) {
     wireChrome();
     wireAccessGate();
     wireTokenModal();
-    pushGlobal("爱家移动云电脑就绪 · 多账户保活控制台");
     await loadSys();
     // Access gate: no server key → setup; has key but no local token → login.
     if (state.setupRequired) {
@@ -4431,6 +4515,11 @@ function setComposerMsg(text, kind) {
       updateTokenBtn();
       return;
     }
+    // HARD_GATE#global-run-log: hydrate page log from backend (survives FE reload / tunnel)
+    try {
+      await loadGlobalLogs();
+    } catch (_) {}
+    pushGlobal("爱家移动云电脑就绪 · 多账户保活控制台");
     try {
       await loadProfiles(true);
     } catch (e) {

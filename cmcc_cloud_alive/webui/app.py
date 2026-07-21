@@ -399,11 +399,15 @@ class OptionalTokenMiddleware(BaseHTTPMiddleware):
 class FakeOrchestrator:
     """In-memory job table. Method names match planned J2 orchestrator."""
 
+    _GLOBAL_LOG_LIMIT = 500
+
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._jobs: Dict[str, Dict[str, Any]] = {}  # job_id -> job
         self._by_profile: Dict[str, str] = {}  # profile_id -> job_id
         self._log_buffers: Dict[str, List[Dict[str, str]]] = {}
+        # HARD_GATE#global-run-log: page-level run log (not card/job scoped)
+        self._global_log: List[Dict[str, str]] = []
         self._subscribers: List[asyncio.Queue] = []
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -543,6 +547,43 @@ class FakeOrchestrator:
             if not job_id:
                 return []
             return list(self._log_buffers.get(job_id, []))[-limit:]
+
+    def append_global_log(
+        self, line: str, level: str = "info", emit: bool = True
+    ) -> Dict[str, str]:
+        """Append one page-level run-log line (ring buffer, optional SSE)."""
+        entry = {
+            "at": _now_iso(),
+            "line": str(line or "")[:2000],
+            "level": str(level or "info")[:32],
+        }
+        if not entry["line"]:
+            return entry
+        with self._lock:
+            self._global_log.append(entry)
+            if len(self._global_log) > self._GLOBAL_LOG_LIMIT:
+                self._global_log = self._global_log[-self._GLOBAL_LOG_LIMIT :]
+        if emit:
+            self._emit("global_log", dict(entry))
+        return dict(entry)
+
+    def recent_global_logs(self, limit: int = 300) -> List[Dict[str, str]]:
+        try:
+            n = max(1, min(int(limit), self._GLOBAL_LOG_LIMIT))
+        except Exception:
+            n = 300
+        with self._lock:
+            return [dict(x) for x in self._global_log[-n:]]
+
+    def clear_global_logs(self) -> Dict[str, Any]:
+        with self._lock:
+            cleared = len(self._global_log)
+            self._global_log = []
+        self._emit(
+            "global_log_cleared",
+            {"cleared": cleared, "at": _now_iso()},
+        )
+        return {"ok": True, "cleared": cleared}
 
 
 def _load_orchestrator() -> Any:
@@ -2312,11 +2353,73 @@ async def jobs_events(request: Request) -> StreamingResponse:
 
 
 async def logs_global(request: Request) -> JSONResponse:
+    """Legacy job/card log query only when scoped.
+
+    HARD_GATE#768-B: unscoped must NOT flatten job buffers into page log.
+    Page-level run log lives at /api/global-logs.
+    """
     pid = request.query_params.get("profileId")
     jid = request.query_params.get("jobId")
+    if not pid and not jid:
+        return JSONResponse({"ok": True, "lines": []})
     lines = ORCH.recent_logs(job_id=jid, profile_id=pid, limit=200)
     safe = [{"at": x.get("at"), "line": str(x.get("line", ""))[:2000]} for x in lines]
     return JSONResponse({"ok": True, "lines": safe})
+
+
+async def global_logs_get(request: Request) -> JSONResponse:
+    """HARD_GATE#global-run-log: page-level run log (backend-owned ring)."""
+    try:
+        limit = int(request.query_params.get("limit") or 300)
+    except Exception:
+        limit = 300
+    fn = getattr(ORCH, "recent_global_logs", None)
+    if not callable(fn):
+        return JSONResponse({"ok": True, "lines": []})
+    lines = fn(limit=limit)
+    safe = [
+        {
+            "at": x.get("at"),
+            "line": str(x.get("line", ""))[:2000],
+            "level": str(x.get("level") or "info")[:32],
+        }
+        for x in lines
+    ]
+    return JSONResponse({"ok": True, "lines": safe})
+
+
+async def global_logs_post(request: Request) -> JSONResponse:
+    """Append one page-level run-log line from FE (or peers)."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    line = str(body.get("line") or body.get("message") or "").strip()
+    if not line:
+        return api_error("BAD_REQUEST", "line required", 400)
+    level = str(body.get("level") or "info")[:32]
+    fn = getattr(ORCH, "append_global_log", None)
+    if not callable(fn):
+        return api_error("NOT_SUPPORTED", "global log not available", 501)
+    entry = fn(line=line[:2000], level=level, emit=True)
+    return JSONResponse({"ok": True, "entry": entry})
+
+
+async def global_logs_clear(request: Request) -> JSONResponse:
+    """Clear backend page-level run log (memory + disk if orchestrator persists)."""
+    fn = getattr(ORCH, "clear_global_logs", None)
+    if not callable(fn):
+        return JSONResponse({"ok": True, "cleared": 0})
+    result = fn() or {}
+    return JSONResponse(
+        {
+            "ok": True,
+            "cleared": int(result.get("cleared") or 0),
+            "lines": [],
+        }
+    )
 
 
 async def index(request: Request) -> Response:
@@ -2377,6 +2480,10 @@ routes = [
     Route("/api/jobs/{job_id}/stop", endpoint=jobs_stop, methods=["POST"]),
     Route("/api/jobs/{job_id}/events", endpoint=jobs_events, methods=["GET"]),
     Route("/api/logs", endpoint=logs_global, methods=["GET"]),
+    # HARD_GATE#global-run-log: page-level run log (survives FE reload / tunnel)
+    Route("/api/global-logs", endpoint=global_logs_get, methods=["GET"]),
+    Route("/api/global-logs", endpoint=global_logs_post, methods=["POST"]),
+    Route("/api/global-logs", endpoint=global_logs_clear, methods=["DELETE"]),
 ]
 
 if _STATIC_DIR.is_dir():

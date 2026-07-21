@@ -568,6 +568,9 @@ class SubprocessBackend:
 class Orchestrator:
     """In-memory job table + per-profile mutex + dry-run/LIVE backends."""
 
+    # Page-level run log (not card/job scoped). Survives FE reload / tunnel re-open.
+    _GLOBAL_LOG_LIMIT = 500
+
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._jobs: Dict[str, Dict[str, Any]] = {}
@@ -579,10 +582,13 @@ class Orchestrator:
         self._account_scg_gate: Dict[str, Dict[str, Any]] = {}
         self._log_buffers: Dict[str, List[Dict[str, str]]] = {}
         self._last_log_line: Dict[str, str] = {}
+        # HARD_GATE#global-run-log: backend-owned page log (FE only mirrors)
+        self._global_log: List[Dict[str, str]] = []
         self._subscribers: List[asyncio.Queue] = []
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._backends: Dict[str, Any] = {}  # job_id -> backend
         self._stop_events: Dict[str, threading.Event] = {}
+        self._load_global_log_from_disk()
 
     # ------------------------------------------------------------------
     # SSE / loop
@@ -767,6 +773,107 @@ class Orchestrator:
             "profileId": pid,
             "cleared": cleared,
         }
+
+    # ------------------------------------------------------------------
+    # Page-level global run log (not card/job; survives FE reload)
+    # ------------------------------------------------------------------
+
+    def _global_log_path(self) -> Path:
+        d = _data_dir()
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return d / "webui_global.jsonl"
+
+    def _load_global_log_from_disk(self) -> None:
+        """Best-effort restore of page run log across process restarts."""
+        path = self._global_log_path()
+        if not path.is_file():
+            return
+        try:
+            lines_out: List[Dict[str, str]] = []
+            with path.open("r", encoding="utf-8") as fh:
+                for raw in fh:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        obj = json.loads(raw)
+                    except Exception:
+                        continue
+                    if not isinstance(obj, dict):
+                        continue
+                    line = str(obj.get("line") or "")[:2000]
+                    if not line:
+                        continue
+                    lines_out.append(
+                        {
+                            "at": str(obj.get("at") or _now_iso()),
+                            "line": line,
+                            "level": str(obj.get("level") or "info")[:32],
+                        }
+                    )
+            if lines_out:
+                self._global_log = lines_out[-self._GLOBAL_LOG_LIMIT :]
+        except Exception:
+            pass
+
+    def _persist_global_log_locked(self) -> None:
+        """Rewrite durable jsonl under lock (caller holds self._lock)."""
+        path = self._global_log_path()
+        try:
+            tmp = path.with_suffix(".jsonl.tmp")
+            with tmp.open("w", encoding="utf-8") as fh:
+                for item in self._global_log:
+                    fh.write(json.dumps(item, ensure_ascii=False) + "\n")
+            tmp.replace(path)
+        except Exception:
+            pass
+
+    def append_global_log(
+        self,
+        line: str,
+        *,
+        level: str = "info",
+        at: Optional[str] = None,
+        emit: bool = True,
+    ) -> Dict[str, str]:
+        """Append one page-level run-log line; ring-buffer + disk + optional SSE."""
+        entry = {
+            "at": at or _now_iso(),
+            "line": _redact_line(str(line or ""))[:2000],
+            "level": str(level or "info")[:32],
+        }
+        with self._lock:
+            self._global_log.append(entry)
+            if len(self._global_log) > self._GLOBAL_LOG_LIMIT:
+                self._global_log = self._global_log[-self._GLOBAL_LOG_LIMIT :]
+            self._persist_global_log_locked()
+        if emit:
+            self._emit("global_log", dict(entry))
+        return dict(entry)
+
+    def recent_global_logs(self, limit: int = 300) -> List[Dict[str, str]]:
+        """Return newest-tail of page-level run log (unscoped, not job buffers)."""
+        try:
+            n = max(1, min(int(limit), self._GLOBAL_LOG_LIMIT))
+        except Exception:
+            n = 300
+        with self._lock:
+            return [dict(x) for x in self._global_log[-n:]]
+
+    def clear_global_logs(self) -> Dict[str, Any]:
+        """Clear page-level run log (memory + disk) and notify SSE clients."""
+        with self._lock:
+            cleared = len(self._global_log)
+            self._global_log = []
+            self._persist_global_log_locked()
+        self._emit(
+            "global_log_cleared",
+            {"cleared": cleared, "at": _now_iso()},
+        )
+        return {"ok": True, "cleared": cleared}
 
     # ------------------------------------------------------------------
     # Start / stop
