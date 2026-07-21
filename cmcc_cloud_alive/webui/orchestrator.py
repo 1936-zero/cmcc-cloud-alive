@@ -634,9 +634,25 @@ class Orchestrator:
             if not jid:
                 return {"profileId": profile_id, "status": "idle", "jobId": None}
             j = self._jobs.get(jid) or {}
+            st = j.get("status", "unknown")
+            # If mapping still points at a finished job (legacy / race),
+            # report idle so profiles.jobStatus does not sticky-stop cards.
+            if st not in ("running", "pending", "starting", "alive"):
+                if self._by_profile.get(profile_id) == jid:
+                    self._by_profile.pop(profile_id, None)
+                return {
+                    "profileId": profile_id,
+                    "status": "idle" if st in ("stopped", "stop", "exited", "unknown") else st,
+                    "jobId": None,
+                    "protocol": j.get("protocol"),
+                    "pid": None,
+                    "startedAt": j.get("startedAt"),
+                    "lastJobId": jid,
+                    "lastStatus": st,
+                }
             return {
                 "profileId": profile_id,
-                "status": j.get("status", "unknown"),
+                "status": st,
                 "jobId": jid,
                 "protocol": j.get("protocol"),
                 "pid": j.get("pid"),
@@ -1212,6 +1228,11 @@ class Orchestrator:
             if exit_code is not None:
                 job["exitCode"] = exit_code
             profile_id = job.get("profileId")
+            # Clear profile→job map when this job is the current one so
+            # get_status() no longer reports a long-dead stopped job as
+            # the card's live status (multi-card badge drift).
+            if profile_id and self._by_profile.get(profile_id) == job_id:
+                self._by_profile.pop(profile_id, None)
             usid = (job.get("userServiceId") or "").strip()
             if usid and self._by_usid.get(usid) == job_id:
                 self._by_usid.pop(usid, None)

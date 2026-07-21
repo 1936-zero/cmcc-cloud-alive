@@ -1100,10 +1100,16 @@ function wireAccessGate() {
   }
 
   function statusOf(p) {
-    const s = String(
-      (p && (p.status || (p.job && p.job.status) || p.jobStatus)) || "idle"
-    ).toLowerCase();
-    if (s === "running" || s === "alive" || s === "starting") return "running";
+    // Prefer live job map (SSE/loadJobs) over stale profile.jobStatus.
+    // HARD_GATE multi-card: badge must track real job, not last profiles poll.
+    const j = jobOf(p);
+    const raw =
+      (j && (j.status || j.jobStatus)) ||
+      (p && (p.status || (p.job && p.job.status) || p.jobStatus)) ||
+      "idle";
+    const s = String(raw).toLowerCase();
+    if (s === "running" || s === "alive" || s === "starting" || s === "pending")
+      return "running";
     if (s === "error" || s === "failed" || s === "fail") return "error";
     if (s === "stopped" || s === "stop" || s === "exited") return "stopped";
     return "idle";
@@ -1159,9 +1165,11 @@ function wireAccessGate() {
 
   function jobOf(p) {
     if (!p) return null;
-    if (p.job && typeof p.job === "object") return p.job;
-    if (p.jobId && state.jobsById[p.jobId]) return state.jobsById[p.jobId];
+    // Prefer live job maps (SSE/loadJobs) over embedded profile snapshot —
+    // profile.job / stale jobId can lag after multi-card start/stop.
     if (p.id && state.jobsByProfile[p.id]) return state.jobsByProfile[p.id];
+    if (p.jobId && state.jobsById[p.jobId]) return state.jobsById[p.jobId];
+    if (p.job && typeof p.job === "object") return p.job;
     return null;
   }
 
@@ -2379,12 +2387,23 @@ function setComposerMsg(text, kind) {
       const list = Array.isArray(jobs) ? jobs : [];
       state.jobsById = Object.create(null);
       state.jobsByProfile = Object.create(null);
+      function _jobRank(st) {
+        const s = String(st || "").toLowerCase();
+        if (s === "running" || s === "alive" || s === "starting") return 3;
+        if (s === "pending") return 2;
+        if (s === "error" || s === "failed" || s === "fail") return 1;
+        return 0; // stopped/idle/unknown — never overwrite a better job
+      }
       for (let i = 0; i < list.length; i++) {
         const j = list[i] || {};
         const jid = j.id || j.jobId || j.job_id;
         if (jid) state.jobsById[jid] = j;
         const pid = j.profileId || j.profile_id || j.accountId || j.account_id;
-        if (pid) state.jobsByProfile[pid] = j;
+        if (!pid) continue;
+        const prev = state.jobsByProfile[pid];
+        if (!prev || _jobRank(j.status) >= _jobRank(prev.status)) {
+          state.jobsByProfile[pid] = j;
+        }
       }
     } catch (_) {
       /* jobs optional; card falls back to profile fields */
@@ -3917,7 +3936,41 @@ function setComposerMsg(text, kind) {
     }
     if (pid) {
       merged.profileId = merged.profileId || pid;
-      state.jobsByProfile[pid] = merged;
+      // Prefer running/pending over older stopped events for same profile.
+      const prevProf = state.jobsByProfile[pid];
+      const prevRank = (function (st) {
+        const s = String(st || "").toLowerCase();
+        if (s === "running" || s === "alive" || s === "starting") return 3;
+        if (s === "pending") return 2;
+        if (s === "error" || s === "failed" || s === "fail") return 1;
+        return 0;
+      })(prevProf && prevProf.status);
+      const nextRank = (function (st) {
+        const s = String(st || "").toLowerCase();
+        if (s === "running" || s === "alive" || s === "starting") return 3;
+        if (s === "pending") return 2;
+        if (s === "error" || s === "failed" || s === "fail") return 1;
+        return 0;
+      })(merged.status);
+      // Always accept if same job id, or better/equal rank, or no prev.
+      const sameJob =
+        prevProf &&
+        String(prevProf.id || prevProf.jobId || "") ===
+          String(merged.id || merged.jobId || jid || "");
+      if (!prevProf || sameJob || nextRank >= prevRank) {
+        state.jobsByProfile[pid] = merged;
+      }
+      // Keep profile fields in sync so statusOf/poll never drift.
+      const pSync = state.profiles.find(function (x) {
+        return x && x.id === pid;
+      });
+      if (pSync) {
+        const chosen = state.jobsByProfile[pid] || merged;
+        pSync.jobStatus = chosen.status || merged.status || pSync.jobStatus;
+        pSync.jobId = chosen.id || chosen.jobId || jid || pSync.jobId;
+        if (!pSync.job || typeof pSync.job !== "object") pSync.job = {};
+        pSync.job = Object.assign({}, pSync.job, chosen);
+      }
     }
     const status = merged.status || data.status || "";
     const label = pid || jid || "?";

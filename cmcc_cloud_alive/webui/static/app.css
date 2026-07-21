@@ -719,7 +719,10 @@ img.brand-mark {
 }
 
 #global-log {
-  max-height: 280px; /* HARD_GATE#845: was 160, truncated */
+  /* FIXED empty-state height from user screenshot 2026-07-22 (≈106px @12px mono) */
+  height: 9em;
+  min-height: 9em;
+  max-height: 9em;
 }
 
 .log-line {
@@ -3356,7 +3359,7 @@ button.desk-refresh-cta:hover,
   content-visibility: visible !important;
 }
 
-/* global run log: exclude from card log-viewport clamps; must show lines */
+/* global run log: FIXED height = empty screenshot height; scroll inside, never grow */
 #global-log,
 #global-log.log-box,
 #global-log.log-viewport,
@@ -3367,9 +3370,9 @@ button.desk-refresh-cta:hover,
   flex: none !important;
   flex-grow: 0 !important;
   flex-shrink: 0 !important;
-  height: auto !important;
+  height: 9em !important; /* HARD_GATE#logH: match empty-state screenshot 2026-07-22 */
   min-height: 9em !important;
-  max-height: 280px !important;
+  max-height: 9em !important;
   overflow-x: hidden !important;
   overflow-y: auto !important;
   overscroll-behavior: contain !important;
