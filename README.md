@@ -245,6 +245,48 @@ WebUI 是壳：卡片 / 表单 / 日志；真正保活走与交互版同一套 `
 - 可选的访问令牌等请放在主机本地 `.env`（compose 已支持可选 `env_file`），**不要把密钥提交到 Git，也不要打进镜像**。
 - WebUI 鉴权用法见下文 **「WebUI 访问密钥」**：首次打开可在页面设置密钥（写入数据目录），或 `.env` 的 `CMCC_WEBUI_TOKEN`；之后登录门 / 顶栏「设置令牌」改密。
 
+### 排障：`spawn failed: … '/data'` / 保活一点就挂
+
+点「保活」后立刻失败、日志类似：
+
+```text
+spawn failed: [Errno 2] No such file or directory: '/data'
+```
+
+说明 **WebUI 起保活子进程时工作目录不存在**（旧版本曾把 cwd 写死为 `/data`）。请按顺序排查：
+
+1. **优先用官方 compose（推荐）**，确保 volume 挂到容器内 `/data`（持久化档案/token，不是可选项）：
+
+   ```bash
+   git pull
+   docker compose -f docker/docker-compose.yml up -d --build
+   docker inspect cmcc-webui --format '{{json .Mounts}}'
+   # 应能看到 Destination=/data 的 volume（名称多为 cmcc_data）
+   ```
+
+2. **官方镜像本身通常仍有 `/data` 目录**（Dockerfile 会 `mkdir` + `HOME=/data`）。  
+   - **漏挂 volume** 时，更常见的是数据写进容器可写层 → **重启后档案丢失**，不一定立刻报 ENOENT。  
+   - 真正 ENOENT 多见于：非官方镜像/自制启动参数、目录被删、只读根、或本机 WebUI 环境被指到不存在的路径。
+
+3. **已合并的修复**（`main` 上「resolve LIVE spawn cwd…」之后）：cwd 跟随 `CMCC_DATA_DIR` / `HOME` / `CMCC_ALIVE_HOME` 解析并自动建目录，不再写死 `/data`。  
+   **请 `git pull` 后 `docker compose … up -d --build` 重建镜像**；只热拷 `.py`、不 rebuild 的旧镜像仍可能是旧逻辑。
+
+4. 自检容器环境：
+
+   ```bash
+   docker exec cmcc-webui sh -c 'echo HOME=$HOME CMCC_ALIVE_HOME=$CMCC_ALIVE_HOME; ls -ld /data /data/.cmcc-cloud-alive 2>&1 | head'
+   ```
+
+### 平台说明（Docker / Python）
+
+| 路径 | 说明 |
+|---|---|
+| **Docker WebUI** | 镜像是 **Linux 容器**。Windows / macOS 需 **Docker Desktop**（或等价引擎）跑同一 compose；宿主机系统差异主要在引擎与 volume，不在业务代码。Apple Silicon 建议确认以 `linux/amd64` 构建/运行（仓库 vendored wheel 面向 manylinux x86_64）。 |
+| **Python CLI** | README 方式 A：Linux / macOS / Windows + Python 3.10+。 |
+| **本机 pip 装 WebUI** | 可启动；LIVE 启停偏 Unix 进程模型，**正式给用户请优先 Docker WebUI**。 |
+
+以上为设计与静态依赖结论，仓库未提供 Win/Mac Desktop CI 矩阵。
+
 ### WebUI 访问密钥
 
 可选。保护控制台 API（删账号/开保活等），**不是**云电脑账号，**不影响保活协议**。打开原网址即可，密钥在门页填写，**不要拼进 URL**。

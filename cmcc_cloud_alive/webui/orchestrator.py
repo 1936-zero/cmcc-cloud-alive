@@ -70,29 +70,21 @@ def _jobs_dir() -> Path:
 def _spawn_cwd() -> str:
     """Working directory for LIVE child processes (HARD_GATE#870 family).
 
-    Must NOT be ``/app`` (or any tree that shadows site-packages via cwd-first
-    import). Prefer the durable home that owns ``.cmcc-cloud-alive`` so custom
-    ``HOME`` / ``CMCC_ALIVE_HOME`` / ``CMCC_DATA_DIR`` deployments work even
-    when the legacy hard-coded ``/data`` path is missing.
+    Must NOT be ``/app`` (cwd-first import would shadow site-packages). Prefer
+    the durable home that owns ``.cmcc-cloud-alive`` so custom ``HOME`` /
+    ``CMCC_ALIVE_HOME`` / ``CMCC_DATA_DIR`` deployments work even when the
+    legacy hard-coded ``/data`` path is missing. Official images still use
+    ``HOME=/data`` + volume ``cmcc_data:/data``; missing volume is a
+    persistence issue, not necessarily ENOENT.
     """
     data = _data_dir().resolve()
-    if data.name == ".cmcc-cloud-alive":
-        cand = data.parent
-    else:
-        raw = (
-            os.environ.get("CMCC_ALIVE_HOME")
-            or os.environ.get("HOME")
-            or str(Path.home())
-        )
-        cand = Path(raw)
-        if cand.name == ".cmcc-cloud-alive":
-            cand = cand.parent
+    # _data_dir() normally ends with ``.cmcc-cloud-alive``; parent is the home.
+    cand = data.parent if data.name == ".cmcc-cloud-alive" else data
     # Never spawn with package/source tree as cwd (shadowing risk).
     try:
         if cand.resolve() == Path("/app").resolve():
-            cand = Path(os.environ.get("HOME") or "/tmp")
-            if cand.resolve() == Path("/app").resolve():
-                cand = Path("/tmp")
+            alt = Path(os.environ.get("HOME") or "/tmp")
+            cand = Path("/tmp") if alt.resolve() == Path("/app").resolve() else alt
     except OSError:
         cand = Path("/tmp")
     try:
@@ -443,7 +435,7 @@ class SubprocessBackend:
         env = dict(os.environ)
         env["CMCC_ORCH_JOB_ID"] = self.job_id
         env["CMCC_ORCH_PROTOCOL"] = self.protocol
-        # HARD_GATE#870: drop PYTHONPATH so cwd=/data cannot re-introduce /app
+        # HARD_GATE#870: drop PYTHONPATH so spawn cwd cannot re-introduce /app
         # package shadowing of site-packages (invalid choice: simple-keepalive).
         env.pop("PYTHONPATH", None)
         # LIVE child stdout is a file; force line-buffer so path/progress
