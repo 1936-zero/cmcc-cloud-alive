@@ -7,7 +7,7 @@
 [![Stars](https://img.shields.io/github/stars/1936-zero/cmcc-cloud-alive?style=social)](https://github.com/1936-zero/cmcc-cloud-alive)
 
 > **务必在爱家客户端将「开机时间 / 自动关机时长」设置为 30 分钟后再使用本保活程序。**  
-> 时长过短时，云电脑可能在保活轮询间隙被平台策略关机；30 分钟是与本工具配合使用的推荐设置。
+> 时长过长时（例如 24 小时）会失效；30 分钟是与本工具配合使用的推荐设置。根因与修复另排期。
 
 > 多账号云电脑保活：命令行交互版 + Docker WebUI 管理台。  
 > 品牌名统一：**爱家移动云电脑**。
